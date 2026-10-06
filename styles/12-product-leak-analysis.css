@@ -9,6 +9,7 @@
 .la-left.collapsed .dv-lp-body{display:none;}
 .la-left.collapsed .la-lp-tree{display:none;}
 .la-left.collapsed .dv-lp-text-wrap{display:none;}
+.la-left.collapsed .la-readiness-foot{display:none;}
 .la-left.collapsed .dv-lp-header{padding:10px 0;align-items:center;justify-content:center;}
 .la-dv-link{background:none;border:none;color:var(--blue);cursor:pointer;font-family:var(--font);font-size:9px;padding:0;text-decoration:underline;}
 

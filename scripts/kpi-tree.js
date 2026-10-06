@@ -144,15 +144,22 @@ async function generateConfirmed(extra){
   // piInputs/piScVersion/piStoryPool reset to their declared defaults
   // (state.js) since they hold generation-attempt-specific derived data
   // (parsedCaps/parsedFeatures, a staleness hash tied to scCanvas) that
-  // goes stale the moment capStore/scCanvas are wiped. piSquads
-  // deliberately NOT reset — team capacity configuration, doesn't
-  // reference anything that becomes stale here.
-  piPlan=null;
+  // goes stale the moment capStore/scCanvas are wiped. v9.20: release
+  // plans (and their per-plan squads) are cleared the same way piPlan
+  // used to be - the shared backlog tray is plan-agnostic data tied to
+  // Story Canvas, not to this generation attempt, so it's left alone.
+  piPlans=[];
+  _piActivePlanId=null;
   piInputs={type:'caps-only',piGoal:'',constraints:'',parsedCaps:[],parsedFeatures:[],carryForwardItems:[],overlapResolutions:{}};
   piScVersion=null;
   piDdPanelOpen=false;
   piDdPanelMetricKey=null;
   piStoryPool={};
+  // v9.27 fix: piReadinessPlans (Adoption Readiness) was missing from this
+  // reset — same gap already fixed once in home.js's New Session reset (see
+  // its own comment there) but never carried over to this regenerate path,
+  // so the tab stayed revealed with fully intact stale data after regen.
+  piReadinessPlans=[];
   const dvTabEl=document.getElementById('tab-dv');
   const laTabEl=document.getElementById('tab-la');
   const miTabEl=document.getElementById('tab-mi');
@@ -166,6 +173,51 @@ async function generateConfirmed(extra){
   if(fcTabEl)fcTabEl.style.display='none';
   if(scTabEl)scTabEl.classList.remove('revealed');
   if(piTabEl)piTabEl.classList.remove('revealed');
+  // v9.27 fix: tab-cc (Capability Canvas) and tab-arp (Adoption Readiness)
+  // were missing from this hide list — capStore was correctly wiped above,
+  // but the tab itself stayed reachable and showing an empty/reset canvas;
+  // tab-arp had both the data AND the tab left stale (see piReadinessPlans
+  // reset above). tab-cc is revealed via style.display (session-store.js),
+  // tab-arp via classList (readiness-canvas.js's rcRevealTab) — un-reveal
+  // each the same way its own reveal function does.
+  const ccTabEl=document.getElementById('tab-cc');
+  const arpTabEl=document.getElementById('tab-arp');
+  if(ccTabEl)ccTabEl.style.display='none';
+  if(arpTabEl)arpTabEl.classList.remove('revealed');
+  // v9.27 fix: tab-ra (Requirement Agent) was also missing — raConversations
+  // stamp intakeBriefId onto Capability Canvas capabilities (see
+  // ra_FinalizeSequence in requirement-agent.js), so once capStore is wiped
+  // above, any existing brief's capability linkage is already orphaned;
+  // reuse raResetState() rather than duplicating its cleanup here. tab-op
+  // (Outcome Pulse) is deliberately NOT touched — opUnlocked is a
+  // documented one-way, whole-session flag (state.js) that only resets on
+  // an actual new session, not a same-session regenerate.
+  // Product decision, post-v9.27 review: raResetState() is now the
+  // DESTRUCTIVE reset, reachable only from THIS flow (Regenerate Discovery
+  // Map is a genuine, permanent reset) — home.js's New Session flow calls
+  // the non-destructive raClearInMemoryState() instead, since leaving a
+  // session via New Session is a pause, not a delete, and must not remove
+  // that session's documents. The two flows no longer call the same
+  // function; only this one does the destructive cleanup.
+  // v9.27 code-review follow-up: also wipe #ra-tab's innerHTML the same way
+  // home.js's homeClearSession() does immediately before its own RA reset
+  // call — this reset path should honor that same ordering even though
+  // today's UI gating makes it unreachable while Requirement Agent is the
+  // active tab.
+  const raTabContentEl=document.getElementById('ra-tab');
+  if(raTabContentEl){raTabContentEl.innerHTML='';raTabContentEl.classList.remove('on');}
+  // v14 (RA-Persistent-Doc-RAG-Spec-v14) — generateConfirmed() is already
+  // async, so awaiting here needs no further propagation: raResetState()
+  // now cleans up this session's RA documents before wiping raConversations,
+  // and everything in this function after this line already runs after it
+  // resolves by virtue of the await, exactly as before this change. Passed
+  // explicitly (this function never nulls _activeSessionId before this
+  // point, unlike home.js's homeClearSession()) rather than relying on
+  // raResetState()'s global fallback, matching the "capture session
+  // identity" convention consistently at every call site.
+  if(typeof raResetState==='function')await raResetState(typeof _activeSessionId!=='undefined'?_activeSessionId:null);
+  const raTabEl=document.getElementById('tab-ra');
+  if(raTabEl)raTabEl.classList.remove('revealed');
   const analyzeBar=document.getElementById('dv-analyze-bar');
   if(analyzeBar)analyzeBar.remove();
   const dvLeft=document.getElementById('dv-left');
@@ -177,7 +229,13 @@ async function generateConfirmed(extra){
   fcRenderCanvas();
   if(typeof newScRender==='function')newScRender();
   if(typeof newScUpdateTabBadge==='function')newScUpdateTabBadge();
-  if(curTab==='dv'||curTab==='la'||curTab==='fc'||curTab==='sc')switchTab('mm');
+  // v9.27 fix: 'cc', 'pi', 'arp', and 'ra' were missing here too — a PM
+  // sitting on Capability Canvas, Release Canvas, Adoption Readiness, or
+  // Requirement Agent when they regenerated stayed on a tab that had just
+  // been hidden out from under them, same class of bug as the tab-hide gap
+  // above. 'op' is deliberately excluded — Outcome Pulse is never hidden by
+  // this reset (see tab-op note above), so there's nothing to bounce out of.
+  if(curTab==='dv'||curTab==='la'||curTab==='fc'||curTab==='sc'||curTab==='cc'||curTab==='pi'||curTab==='arp'||curTab==='ra')switchTab('mm');
 
   // Industry fallback: product profile -> company profile -> empty (ST-14)
   const industry=_p.industry||_cp.companyIndustry||'';
@@ -198,8 +256,15 @@ async function generateConfirmed(extra){
     approach:(_sc&&_sc.approach)||'outcome-based',
     companyStrategy:_cp.companyStrategy||'',
     companyContext:_cp.companyContext||'',
-    docContext:(typeof buildDocContext==='function')?buildDocContext('dm'):''
+    docContext:''
   };
+  // Shared across this call's dm-tier and (if Market Intelligence runs)
+  // mi-tier buildDocContext calls below, so a doc pool that's truncated in
+  // both tiers still only shows the disclosure once for this generation.
+  var _docToastShown={shown:false};
+  var _dmDocRes=(typeof buildDocContext==='function')?buildDocContext('dm'):{text:'',truncated:false};
+  fd.docContext=_dmDocRes.text;
+  _fireDocTruncatedToast(_dmDocRes.truncated,_docToastShown);
 
   // Check if MI is enabled for this session
   const runMIFirst=!!((_sc&&_sc.marketIntelligence)&&featMI);
@@ -213,7 +278,7 @@ async function generateConfirmed(extra){
       alertDiv.innerHTML=`<div class="mi-alert-modal">
         <div class="mi-alert-icon"><i class="ti ti-alert-triangle"></i></div>
         <div class="mi-alert-title">Market Intelligence is enabled.</div>
-        <div class="mi-alert-body">This will take 3–5 minutes — we'll research the market, analyse competitors, and use those findings to build your KPI tree. Worth the wait.</div>
+        <div class="mi-alert-body">This will take 3–5 minutes — we'll research the market, analyse competitors, and use those findings to build your Discovery Map. Worth the wait.</div>
         <div class="mi-alert-note">Research is AI-generated from training data. Verify statistics independently before client use.</div>
         <div class="mi-alert-btns">
           <button class="mi-alert-secondary" id="mi-alert-skip">Generate without Market Intelligence</button>
@@ -233,7 +298,9 @@ async function generateConfirmed(extra){
       try{
         const sys=(typeof SYS_MI!=='undefined'?SYS_MI:'');
         const _miCtx=Object.assign({},fd);
-        _miCtx.docContext=(typeof buildDocContext==='function')?buildDocContext('mi'):'';
+        var _miDocRes1=(typeof buildDocContext==='function')?buildDocContext('mi',fd.name):{text:'',truncated:false};
+        _miCtx.docContext=_miDocRes1.text;
+        _fireDocTruncatedToast(_miDocRes1.truncated,_docToastShown);
         const usr=buildMarketIntelPrompt(_miCtx, null);
         const miTxt=await callAPI(sys, usr, 8000, _miSignal, 'claude-haiku-4-5', 'mi-suggest');
         const miClean=miTxt.replace(/```json|```/g,'').trim();
@@ -262,7 +329,7 @@ async function generateConfirmed(extra){
           // full rationale on this pattern.
           throw miErr;
         }
-        showToast('Market Intelligence could not be generated. Continuing with KPI tree. You can run it manually from the MI tab.','warn');
+        showToast('Market Intelligence could not be generated. Continuing with Discovery Map. You can run it manually from the MI tab.','warn');
       }
       // Advance to Stage 2: KPI Tree Analysis
       if(window._loaderAdvanceStage) window._loaderAdvanceStage();
@@ -383,11 +450,20 @@ async function generateConfirmed(extra){
     if(typeof renderDDEmpty==='function'&&document.getElementById('dd-out'))renderDDEmpty();
     if(btn)btn.disabled=false;
     renderDiagnosticActionBar();
-    // Reveal Capability Canvas tab now that Discovery Map results exist
-    const ccTabEl=document.getElementById('tab-cc');
-    if(ccTabEl) ccTabEl.style.display='';
-    // Signal new/updated content in Capability Canvas (cleared on first visit)
-    if(typeof markTabPending==='function')markTabPending('cc');
+    // Reveal Capability Canvas tab now that Discovery Map results exist —
+    // RA-off only. When Requirement Agent is on, CC is no longer the direct
+    // next step from Discovery Map (the DM CTA routes to RA instead, see
+    // above) — CC stays hidden until RA's own Finalize reveals it
+    // (raRunFinalizeSequence(), requirement-agent.js). Revealing it here
+    // unconditionally regardless of raEnabled was a confirmed regression:
+    // it let CC become visible immediately after DM finished generating,
+    // before the PM had even opened Requirement Agent.
+    if(!(typeof raEnabled!=='undefined'&&raEnabled)){
+      const ccTabEl=document.getElementById('tab-cc');
+      if(ccTabEl) ccTabEl.style.display='';
+      // Signal new/updated content in Capability Canvas (cleared on first visit)
+      if(typeof markTabPending==='function')markTabPending('cc');
+    }
     // Reveal MI tab if THIS SESSION chose MI at launch — Phase 5 fix
     // (v8.118): previously checked ONLY the global featMI setting, which
     // meant a session that itself chose "no MI" could still have the tab
@@ -460,6 +536,15 @@ async function generateConfirmed(extra){
 }
 async function regen(){
   if(typeof canEditSession==='function'&&!canEditSession())return;
+  // v9.25 — stop-on-send: clicking this surface's own action button means
+  // there's no "next message" for continued dictation to feed. abort(),
+  // not stop() — traced regen()'s own flow: the
+  // refinement text below is read synchronously in this same tick, before
+  // either method's async tail could resolve, so they'd capture identical
+  // text either way; abort() is still correct to guarantee no delayed,
+  // surprise result can land later if the refine bar is reopened for an
+  // unrelated second refinement.
+  voiceStopActive('abort');
   const refinementText=gv('regen-in');
   // v8.133 fix (item 3): checked here too, not just inside generate() —
   // this function can route to _mmShowRegenConfirm's richer modal, which
@@ -475,7 +560,7 @@ async function regen(){
   // Check if downstream data exists — warn before wiping
   const hasDownstream=(capStore&&Object.keys(capStore).length>0)||
     (scCanvas&&scCanvas.length>0)||
-    (piPlan&&Object.keys(piPlan).length>0);
+    (typeof piPlans!=='undefined'&&Array.isArray(piPlans)&&piPlans.length>0);
   if(hasDownstream){
     _mmShowRegenConfirm(refinementText);
   } else {
@@ -497,7 +582,7 @@ function _mmShowRegenConfirm(refinementText){
         <div style="font-size:13px;font-weight:500;color:var(--t1);">Regenerate Discovery Map?</div>
       </div>
       <div class="modal-body">
-        This will permanently clear your <strong>Capability Canvas, Feature Canvas, Story Canvas and PI Planning</strong> data for this session. This cannot be undone.
+        This will permanently clear your <strong>Capability Canvas, Feature Canvas, Story Canvas and Release Canvas</strong> data for this session. This cannot be undone.
         <div style="margin-top:12px;">
           <button id="mm-regen-export-btn" style="width:100%;background:none;border:1px solid var(--divider);border-radius:6px;padding:7px 12px;font-size:11px;color:var(--t2);cursor:pointer;text-align:left;display:flex;align-items:center;gap:6px;" onclick="_mmRegenExport()">
             <i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export current work before clearing
@@ -570,7 +655,15 @@ async function _mmRegenProceed(refinementText){
         if(localEntry&&localEntry.snapshot){
           localEntry.snapshot.capStore={};
           localEntry.snapshot.scCanvas=[];
-          localEntry.snapshot.piPlan=null;
+          localEntry.snapshot.piPlans=[];
+          // v9.27 code-review fix: this allowlist wasn't updated when
+          // piReadinessPlans/raConversations gained their own in-memory
+          // reset above - without these two, a tab close/crash before the
+          // async Supabase write confirms would resume from this stale
+          // localStorage snapshot and resurrect the exact stale Adoption
+          // Readiness/Requirement Agent data the in-memory reset just fixed.
+          localEntry.snapshot.piReadinessPlans=[];
+          localEntry.snapshot.raConversations=[];
           localEntry.snapshot.dmRegenAt=sessionContext.dmRegenAt;
           localStorage.setItem(_SS_PREFIX+_activeSessionId,JSON.stringify(localEntry));
         }
@@ -638,6 +731,16 @@ function _mmReconcileManualCaps(parsed,manualList,allowAISuggestions){
 
 
 function renderDiagnosticActionBar(){
+  // v9.25 — this function does existing.remove()+full rebuild EVERY time
+  // it's called, and it's called from far more places than just "after
+  // regenerating" (confirmed via grep: also confirmDeleteStage() and the
+  // equivalent add/edit/delete-stage/capability paths) — i.e. ANY stage or
+  // capability mutation anywhere on this screen destroys #regen-in, even if
+  // the refine bar is open with an active dictation session at the time and
+  // has nothing to do with the edit being made. Single guard here covers
+  // every one of those call sites at once, mirroring requirement-agent.js's
+  // own raRenderCenter() choke-point pattern.
+  voiceStopActive('abort');
   const existing=document.getElementById('diag-action-bar');
   if(existing)existing.remove();
   const right=document.querySelector('.right');
@@ -653,13 +756,24 @@ function renderDiagnosticActionBar(){
   const refineLbl='Refine Discovery Map';  // v8.38 — always DM regardless of approach
   const refinePlaceholder=isCap?'e.g. Remove the Forecasting stage, add a Carrier Management stage, rename Real-Time Inventory Visibility to Live Stock Sync, focus more on returns handling, split Fulfillment into two stages...':'e.g. Remove the Forecasting stage, add a Carrier Management stage, rename Promise Accuracy to Delivery Commitment, focus more on exception handling, split Fulfillment into two stages...';
   const barHint=isCap?`Discovery Map ready &middot; ${metricCount} process area${metricCount!==1?'s':''} &middot; ${stageCount} stage${stageCount!==1?'s':''} ${modelName?'&middot; '+e(modelName):''}`:`Discovery Map ready &middot; ${metricCount} metrics &middot; ${stageCount} stage${stageCount!==1?'s':''} ${modelName?'&middot; '+e(modelName):''}`;
-  const continueCta=`<button class="diag-bar-cta" onclick="revealAndSwitchTab('cc')"><i class="ti ti-arrow-right" style="font-size:12px;" aria-hidden="true"></i> Continue to Capability Canvas</button>`;
+  // Requirement Agent redesign (Discovery-First Entry Point) — when RA is
+  // on, this CTA is relabeled and rerouted to Requirement Agent instead of
+  // Capability Canvas (RA is now entered from Discovery Map, not from CC —
+  // see requirement-agent.js's raEnterFromDiscoveryMap()). Same position/
+  // visual weight either way. RA-off: completely unchanged.
+  const _dmRaOn=typeof raEnabled!=='undefined'&&!!raEnabled;
+  const continueCta=_dmRaOn
+    ?`<button class="diag-bar-cta" onclick="raEnterFromDiscoveryMap()"><i class="ti ti-arrow-right" style="font-size:12px;" aria-hidden="true"></i> Define Requirements</button>`
+    :`<button class="diag-bar-cta" onclick="revealAndSwitchTab('cc')"><i class="ti ti-arrow-right" style="font-size:12px;" aria-hidden="true"></i> Continue to Capability Canvas</button>`;
   bar.innerHTML=`
     <div class="diag-refine-expand" id="diag-refine-expand" style="display:none;">
       <div class="diag-refine-lbl">${refineLbl}</div>
       <div class="diag-refine-row">
         <textarea class="diag-refine-txt" id="regen-in" placeholder="${refinePlaceholder}" rows="2"></textarea>
-        <button class="diag-refine-send" id="diag-refine-send" onclick="regen()" title="Refine &amp; Regenerate"><i class="ti ti-refresh" style="font-size:13px;" aria-hidden="true"></i></button>
+        <div class="diag-refine-btn-group">
+          ${(typeof voiceButtonHtml==='function')?voiceButtonHtml({textareaId:'regen-in',buttonId:'regen-voice-btn',statusId:'regen-voice-status'}):''}
+          <button class="diag-refine-send" id="diag-refine-send" onclick="regen()" title="Refine &amp; Regenerate"><i class="ti ti-refresh" style="font-size:13px;" aria-hidden="true"></i></button>
+        </div>
       </div>
     </div>
     <div class="diag-bar-row">
@@ -678,6 +792,11 @@ function toggleRefineBar(){
   const btn=document.getElementById('diag-refine-btn');
   if(!expand)return;
   const isOpen=expand.style.display!=='none';
+  // v9.25 — collapsing the bar doesn't destroy #regen-in (just hides it via
+  // display, so dictation could technically keep running unseen), but
+  // collapsing reads as "I'm done here" the same way clicking Regenerate
+  // does — stop on collapse, not on expand.
+  if(isOpen)voiceStopActive('abort');
   expand.style.display=isOpen?'none':'block';
   const refineLbl='Refine Discovery Map';  // v8.38 — always DM regardless of approach
   if(btn)btn.innerHTML=isOpen?'<i class="ti ti-refresh" style="font-size:11px;" aria-hidden="true"></i> '+refineLbl:'<i class="ti ti-chevron-down" style="font-size:11px;" aria-hidden="true"></i> '+refineLbl;
@@ -1643,7 +1762,7 @@ function confirmDeleteCapability(stIdx,li,expectedBucketId,expectedName){
 
 // ── Evidence drawer entry point from KPI tree ──
 function kpiOpenEvidenceDrawer(metricName, displayName, stageName, level){
-  if(!gData){showToast('Generate a KPI tree first.','info');return;}
+  if(!gData){showToast('Generate a Discovery Map first.','info');return;}
   // Create diagnostic session on first use if it doesn't exist
   if(diagnosticSessions.length===0){
     const session={

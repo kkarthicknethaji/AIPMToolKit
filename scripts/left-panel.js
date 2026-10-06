@@ -15,6 +15,7 @@ function applyFeats(){
   featMI   = appSettings.featMI;
   featPI   = appSettings.featPI;
   featOutcomePulse = appSettings.featOutcomePulse;
+  featRA = appSettings.featRA;
 
   // #tab-dd retired — no longer a tab. DD is download-only panel triggered from KPI tree.
   document.querySelectorAll('.cap-trigger').forEach(function(b){b.style.display='';});
@@ -40,8 +41,16 @@ function applyFeats(){
   if(featDiag&&productLeakAnalysis&&productLeakAnalysis.length>0){
     if(laTabEl)laTabEl.style.display='';
   }
-  // Restore bottom bar CTA if on mm tab, KPI tree exists, and bar isn't already there
-  if(featDiag&&gData&&curTab==='mm'&&!document.getElementById('diag-action-bar')){
+  // Restore/refresh bottom bar CTA if on mm tab and KPI tree exists. Always
+  // re-renders (renderDiagnosticActionBar() removes+rebuilds fresh, so this
+  // is safe/idempotent) rather than skipping when the bar already exists —
+  // the CTA's label/route depends on the live raEnabled value (see
+  // kpi-tree.js's _dmRaOn), so a settings save that flips raEnabled while
+  // Discovery Map is already on screen must force a real re-render here,
+  // not silently leave the bar showing its pre-toggle CTA (confirmed
+  // regression: the old "!document.getElementById(...)" guard blocked
+  // exactly this case).
+  if(featDiag&&gData&&curTab==='mm'){
     renderDiagnosticActionBar();
   }
   // Market Intelligence: hide/show tab and mi-gated elements
@@ -53,34 +62,53 @@ function applyFeats(){
     if(miTabEl)miTabEl.style.display='none';
     if(curTab==='mi')switchTab('mm');
   }
-  // PI Planning: hide tab if disabled, show if enabled and piPlan exists
+  // PI Planning: hide tab if disabled, show if enabled and a release plan exists
   const piTabEl=document.getElementById('tab-pi');
   if(piTabEl){
     if(!featPI){
       piTabEl.classList.remove('revealed');
       if(curTab==='pi')switchTab('mm');
-    } else if(typeof piPlan!=='undefined'&&piPlan){
+    } else if(typeof piPlans!=='undefined'&&Array.isArray(piPlans)&&piPlans.length>0){
       piTabEl.classList.add('revealed');
     }
   }
-  // Outcome Verification Loop (v9.10.00 feedback item 8): Outcome Pulse
-  // reveals only once BOTH the feature flag is on AND a Discovery Map has
-  // been generated (gData exists) — corrected from the original Phase C
-  // build, which reasoned this should reveal purely on the feature flag
-  // since the tab is "meaningful to view even with zero hypotheses
-  // logged." That reasoning didn't account for gData itself being absent
-  // pre-generation — without a Discovery Map, Outcome Breakdown has no
-  // value-chain stages to derive rows from at all, so the tab would show
-  // an empty/broken screen, not a legitimately-empty one. Matches PI's
-  // existing "only reveal once real data exists" pattern rather than
-  // Market Intelligence's "reveal purely on flag" pattern.
+  // Adoption Readiness tab (v9.22, real top-nav tab) — reveal once at
+  // least one readinessPlan exists in the session, same content-truthiness
+  // convention as tab-sc/tab-pi above (never un-reveal here; only Home's
+  // reset flow un-reveals tabs, matching tab-sc/tab-pi's own precedent).
+  const arpTabEl=document.getElementById('tab-arp');
+  if(arpTabEl&&typeof piReadinessPlans!=='undefined'&&Array.isArray(piReadinessPlans)&&piReadinessPlans.length>0){
+    arpTabEl.classList.add('revealed');
+  }
+  // Adoption Readiness gating (v9.21) — REPLACES the old "reveal once a
+  // feature flag + Discovery Map + Feature Canvas content exist" trigger
+  // entirely (that condition is retired, not layered under this one, per
+  // ADOPTION_READINESS_SPEC.md §3.1). Outcome Pulse now only ever becomes
+  // visible once the FIRST Adoption Readiness Plan in this session reaches
+  // status:"finalized" (opUnlocked, a one-way session-level flag set by
+  // readiness-canvas.js's rcFinalize()). Once true it stays visible for the
+  // remainder of the session, regardless of any later reopen/un-finalize.
   const opTabEl=document.getElementById('tab-op');
   if(opTabEl){
-    if(!featOutcomePulse||typeof gData==='undefined'||!gData){
+    if(!(typeof opUnlocked!=='undefined'&&opUnlocked)){
       opTabEl.style.display='none';
       if(curTab==='op')switchTab('mm');
     } else {
       opTabEl.style.display='';
+    }
+  }
+  // Requirement Agent redesign (Discovery-First Entry Point) — raEnabled now
+  // only gates Discovery Map's "Define Requirements" CTA relabel/reroute
+  // (kpi-tree.js's renderDiagnosticActionBar()); Capability Canvas no longer
+  // reads raEnabled at all. Settings > Feature Modules remains the single,
+  // immediate-effect control for the toggle, matching every other module
+  // toggle's pattern; syncing it here on every settings save is what makes
+  // it take effect without a reload.
+  if(typeof raEnabled!=='undefined' && raEnabled!==featRA){
+    raEnabled=featRA;
+    if(typeof capActiveMetricKey!=='undefined'){
+      if(capActiveMetricKey===null && typeof ccRenderAllCaps==='function') ccRenderAllCaps();
+      else if(typeof ccRenderMainContent==='function') ccRenderMainContent();
     }
   }
 }

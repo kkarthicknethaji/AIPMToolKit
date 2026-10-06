@@ -3,6 +3,9 @@
 // Product: OrderHub — a B2B SaaS omnichannel order orchestration platform (Capability-Driven)
 // Product: Unified Cart & Checkout — a B2C multi-business booking/commerce platform (Outcome-Based)
 
+// Shared demo release-plan name generator — current year/quarter, e.g. 'REL-2026-Q3'.
+function _genDemoReleasePlanName(){return'REL-'+new Date().getFullYear()+'-Q'+Math.ceil((new Date().getMonth()+1)/3);}
+
 // ── Dispatcher — loads the selected demo product dataset ──
 function loadDemoData(productKey){
   _snapshotPreDemoState();
@@ -662,7 +665,7 @@ function _demoLoadFocusly(){
   // ── PI Planning demo data — realistic board (3 squads, 5 sprints, 27+3 stories) ──
   piMode=false;
   // Capacity = story points per sprint (not PI total)
-  piSquads=[
+  const _demoSquads1=[
     {name:'Core App', devs:4,sprints:5,availability:85,capacity:18},
     {name:'Growth',   devs:3,sprints:5,availability:80,capacity:14},
     {name:'Platform', devs:3,sprints:5,availability:75,capacity:12}
@@ -763,8 +766,10 @@ function _demoLoadFocusly(){
     demoSprints2.push({id:i2+1,label:'Sprint '+(i2+1),dateRange:fmt2(s2)+' – '+fmt2(e3)});
   }
 
-  piPlan={
-    name:'PI-'+new Date().getFullYear()+'-Q'+Math.ceil((new Date().getMonth()+1)/3),
+  const _demoPlan1={
+    id:'rp-demo-1',
+    createdAt:Date.now(),
+    name:_genDemoReleasePlanName(),
     startDate:demoStart2.toISOString().split('T')[0],
     sprintCount:5,sprintDuration:14,
     sprints:demoSprints2,
@@ -778,18 +783,22 @@ function _demoLoadFocusly(){
       {description:'App Store Connect API access for screenshot A/B testing',owner:'Apple',dueDate:'Sprint 1',status:'confirmed'},
       {description:'Push notification certificate renewal',owner:'DevOps',dueDate:'Before Sprint 2',status:'in-progress'}
     ],
-    backlogStoryIds:['ST-GR7'],
     businessValueBullets:[
       'Reduce week-2 churn by 15% through habit formation mechanics',
       'Increase App Store rating from 4.1 to 4.4 via review management',
       'Deliver personalised nudge engine — 20% lift in weekly sessions',
       'Platform analytics + notification foundation for Q4 growth features'
     ],
-    businessValueOneLiner:'This PI builds the habit formation and platform infrastructure needed to convert first-week users into long-term subscribers.',
+    businessValueOneLiner:'This release builds the habit formation and platform infrastructure needed to convert first-week users into long-term subscribers.',
     backlogNotes:{
       'ST-GR7':'Low priority — rating trend data not available until ST-PL3 analytics schema lands'
-    }
+    },
+    squads:_demoSquads1
   };
+  piPlans=[_demoPlan1];
+  _piActivePlanId=_demoPlan1.id;
+  piBacklogStoryIds=(typeof piBacklogStoryIds!=='undefined'&&Array.isArray(piBacklogStoryIds))?piBacklogStoryIds:[];
+  if(!piBacklogStoryIds.includes('ST-GR7'))piBacklogStoryIds.push('ST-GR7');
 
   // Set _inPIPlan flags on demo stories that are in the PI plan
   // ST-004, ST-005 (One-tap session start) and ST-001 (post-session share) are in Sprint 1/2
@@ -1347,13 +1356,13 @@ function _demoLoadOrderHub(){
 
   // ── PI Planning demo data — light board (2 squads, 2 sprints, ~9 stories) ──
   piMode=false;
-  piSquads=[
+  const _demoSquadsOH=[
     {name:'Capture Squad',  devs:3,sprints:2,availability:85,capacity:14},
     {name:'Returns Squad',  devs:3,sprints:2,availability:80,capacity:12}
   ];
   piInputs={type:'caps-only',
     piGoal:'Improve order fill rate and reduce return processing time before Q4 peak season.',
-    constraints:'Carrier integration work is out of scope for this PI — focus on capture accuracy and returns automation.',
+    constraints:'Carrier integration work is out of scope for this release — focus on capture accuracy and returns automation.',
     parsedCaps:[],parsedFeatures:[],
     carryForwardItems:['Address serviceability validation (partially complete from PI-2026-Q1)'],
     overlapResolutions:{}};
@@ -1401,8 +1410,10 @@ function _demoLoadOrderHub(){
     demoSprintsOH.push({id:iOH+1,label:'Sprint '+(iOH+1),dateRange:fmtOH(sOH)+' \u2013 '+fmtOH(eOH)});
   }
 
-  piPlan={
-    name:'PI-'+new Date().getFullYear()+'-Q'+Math.ceil((new Date().getMonth()+1)/3),
+  const _demoPlanOH={
+    id:'rp-demo-oh',
+    createdAt:Date.now(),
+    name:_genDemoReleasePlanName(),
     startDate:demoStartOH.toISOString().split('T')[0],
     sprintCount:2,sprintDuration:14,
     sprints:demoSprintsOH,
@@ -1413,18 +1424,22 @@ function _demoLoadOrderHub(){
     externalDeps:[
       {description:'Carrier zone data feed access for address serviceability validation',owner:'Carrier Partner API team',dueDate:'Sprint 1',status:'in-progress'}
     ],
-    backlogStoryIds:_backlogIdsOH,
     businessValueBullets:[
       'Improve order fill rate by surfacing accurate stock signals earlier in the funnel',
       'Reduce return processing time through guided reasons and in-store drop-off',
       'Lay groundwork for carrier-dependent capabilities (address validation, refund-on-scan)'
     ],
-    businessValueOneLiner:'This PI improves order capture accuracy and returns processing speed ahead of Q4 peak season.',
+    businessValueOneLiner:'This release improves order capture accuracy and returns processing speed ahead of Q4 peak season.',
     backlogNotes:{
       'ST-CAP4':'Blocked on carrier zone data feed — see external dependency',
       'ST-RET5':'Blocked on carrier scan webhook integration'
-    }
+    },
+    squads:_demoSquadsOH
   };
+  piPlans=[_demoPlanOH];
+  _piActivePlanId=_demoPlanOH.id;
+  piBacklogStoryIds=(typeof piBacklogStoryIds!=='undefined'&&Array.isArray(piBacklogStoryIds))?piBacklogStoryIds:[];
+  _backlogIdsOH.forEach(function(id){if(!piBacklogStoryIds.includes(id))piBacklogStoryIds.push(id);});
 
   // Set _inSC and _inPIPlan flags on demo stories
   const _piInPlanIdsOH=['ST-001','ST-002','ST-004','ST-005'];
@@ -1586,8 +1601,9 @@ function clearDemoMode(){
   ddGenerated=false;
   // Reset PI planning state
   piMode=false;
-  piPlan=null;
-  piSquads=[];
+  piPlans=[];
+  piBacklogStoryIds=[];
+  _piActivePlanId=null;
   piScVersion=null;
   piInputs={type:'caps-only',piGoal:'',constraints:'',parsedCaps:[],parsedFeatures:[],carryForwardItems:[],overlapResolutions:{}};
   // Hide PI tab
@@ -2140,15 +2156,15 @@ function _demoLoadUnifiedCart(){
 
   // ── PI Planning demo data — light board (2 squads, 2 sprints, ~9-10 stories) ──
   piMode=false;
-  piSquads=[
+  const _demoSquadsOC=[
     {name:'Cart & Checkout Squad', devs:4,sprints:2,availability:85,capacity:16},
     {name:'Accessibility Squad',   devs:2,sprints:2,availability:80,capacity:10}
   ];
   piInputs={type:'caps-only',
     piGoal:'Increase cross-business attach rate and ship WCAG 2.2 AA compliance for unified checkout before the Q3 regulatory deadline.',
-    constraints:'Accessibility Squad is dedicated to compliance work this PI and cannot pick up cart/checkout features.',
+    constraints:'Accessibility Squad is dedicated to compliance work this release and cannot pick up cart/checkout features.',
     parsedCaps:[],parsedFeatures:[],
-    carryForwardItems:['Multi-business bundle price preview (partially complete from PI-2026-Q1)'],
+    carryForwardItems:['Multi-business bundle price preview (partially complete from REL-2026-Q1)'],
     overlapResolutions:{}};
 
   // ── Story pool (standalone — not attached to SC features) ──
@@ -2158,7 +2174,7 @@ function _demoLoadUnifiedCart(){
     {id:'ST-CC1',title:'One-tap add for cross-business items',statement:'As a OneCart guest, I want to add a suggested cross-business item to my cart in one tap with date and party size pre-filled, so that I do not re-enter information.',points:3,priority:'Should Have',dor:'READY',dorReason:''},
     {id:'ST-CC2',title:'Date conflict banner with suggested fix',statement:'As a OneCart guest, I want to see a banner with a suggested date fix when my cart has a date conflict across business lines, so that I can resolve it in one tap.',points:3,priority:'Must Have',dor:'READY',dorReason:''},
     {id:'ST-CC3',title:'Unified inventory hold timer',statement:'As a OneCart guest, I want to see a single countdown timer for all items held across business lines during checkout, so that I know how long I have to complete my purchase.',points:3,priority:'Must Have',dor:'READY',dorReason:''},
-    {id:'ST-CC4',title:'Pre-built bundle templates for common itineraries',statement:'As a OneCart guest, I want to see pre-built bundle templates for common multi-day itineraries, so that I have a starting point to customise rather than building from scratch.',points:5,priority:'Should Have',dor:'IN REVIEW',dorReason:'Depends on bundle pricing engine (carry-forward from PI-2026-Q1)'},
+    {id:'ST-CC4',title:'Pre-built bundle templates for common itineraries',statement:'As a OneCart guest, I want to see pre-built bundle templates for common multi-day itineraries, so that I have a starting point to customise rather than building from scratch.',points:5,priority:'Should Have',dor:'IN REVIEW',dorReason:'Depends on bundle pricing engine (carry-forward from REL-2026-Q1)'},
     // Accessibility Squad stories
     {id:'ST-A1',title:'Checkout error messages announced clearly to screen readers',statement:'As a OneCart guest using a screen reader, I want checkout error messages to be announced clearly with a recommended next action, so that I can recover without sighted assistance.',points:3,priority:'Must Have',dor:'READY',dorReason:''},
     {id:'ST-A2',title:'Combined points balance slider is keyboard-operable',statement:'As a OneCart guest using only a keyboard, I want to adjust the points redemption slider at checkout using arrow keys, so that I can redeem points without a mouse.',points:2,priority:'Must Have',dor:'READY',dorReason:''},
@@ -2192,8 +2208,10 @@ function _demoLoadUnifiedCart(){
     demoSprintsOC.push({id:iOC+1,label:'Sprint '+(iOC+1),dateRange:fmtOC(sOC)+' \u2013 '+fmtOC(eOC)});
   }
 
-  piPlan={
-    name:'PI-'+new Date().getFullYear()+'-Q'+Math.ceil((new Date().getMonth()+1)/3),
+  const _demoPlanOC={
+    id:'rp-demo-oc',
+    createdAt:Date.now(),
+    name:_genDemoReleasePlanName(),
     startDate:demoStartOC.toISOString().split('T')[0],
     sprintCount:2,sprintDuration:14,
     sprints:demoSprintsOC,
@@ -2204,18 +2222,22 @@ function _demoLoadUnifiedCart(){
     externalDeps:[
       {description:'WCAG 2.2 AA audit checkpoint with external accessibility consultant',owner:'Accessibility Consultant',dueDate:'End of Sprint 2',status:'confirmed'}
     ],
-    backlogStoryIds:_backlogIdsOC,
     businessValueBullets:[
       'Increase cross-business attach rate via in-cart suggestions, date-conflict resolution, and single-charge checkout',
       'Ship WCAG 2.2 AA compliance for unified checkout ahead of the Q3 regulatory deadline',
-      'Lay groundwork for bundle templates and points expiry nudges in the following PI'
+      'Lay groundwork for bundle templates and points expiry nudges in the following release'
     ],
-    businessValueOneLiner:'This PI increases cross-business attach rate through cart and checkout improvements while delivering accessibility compliance ahead of the Q3 deadline.',
+    businessValueOneLiner:'This release increases cross-business attach rate through cart and checkout improvements while delivering accessibility compliance ahead of the Q3 deadline.',
     backlogNotes:{
-      'ST-CC4':'Blocked on bundle pricing engine carry-forward from PI-2026-Q1',
-      'ST-A3':'Lower priority — itinerary calendar view accessibility scoped for next PI'
-    }
+      'ST-CC4':'Blocked on bundle pricing engine carry-forward from REL-2026-Q1',
+      'ST-A3':'Lower priority — itinerary calendar view accessibility scoped for next release'
+    },
+    squads:_demoSquadsOC
   };
+  piPlans=[_demoPlanOC];
+  _piActivePlanId=_demoPlanOC.id;
+  piBacklogStoryIds=(typeof piBacklogStoryIds!=='undefined'&&Array.isArray(piBacklogStoryIds))?piBacklogStoryIds:[];
+  _backlogIdsOC.forEach(function(id){if(!piBacklogStoryIds.includes(id))piBacklogStoryIds.push(id);});
 
   // Set _inSC and _inPIPlan flags on demo stories
   const _piInPlanIdsOC=['ST-001','ST-002','ST-003','ST-007','ST-008'];

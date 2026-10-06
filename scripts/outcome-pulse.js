@@ -18,6 +18,7 @@
 let opExpandedStages=new Set();
 let opSignalFilter=''; // '' = all signals
 let opMetricFilter=''; // '' = all metrics (v9.11, Outcome Pulse Iteration Loop)
+let opGroupMode='stage'; // 'stage' | 'release' (v9.21, Adoption Readiness §3.2) — shares opSignalFilter/opMetricFilter across both views, not a per-view filter
 
 // ── opGetTrackedMetrics — distinct, alphabetically sorted list of metric
 // names across tracked features (v9.11). "Tracked" here means the same
@@ -84,7 +85,18 @@ function opRenderTopRow(){
 // number input is exactly the kind of thing browsers reject. ──
 function opFormatNumber(n){
   if(n===null||n===undefined||n===''||isNaN(Number(n)))return String(n===null||n===undefined?'—':n);
-  return Number(n).toLocaleString('en-US',{maximumFractionDigits:2});
+  const num=Number(n);
+  // v9.12.06 fix: previously used only {maximumFractionDigits:2}, which
+  // rounds correctly (61.5643->61.56, 61.5678->61.57) but does NOT pad a
+  // single-decimal value up to two digits (61.5 stayed "61.5" instead of
+  // "61.50"). Whole numbers were already correct before this fix (100
+  // stayed "100", not "100.00") and must stay that way — so this can't be
+  // a single toLocaleString call with a fixed minimumFractionDigits (that
+  // would force "100.00"); it has to check, after rounding, whether the
+  // result is actually a whole number and only pad to 2dp otherwise.
+  const rounded=Math.round(num*100)/100;
+  if(Number.isInteger(rounded))return rounded.toLocaleString('en-US');
+  return rounded.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 }
 
 // ── Normalize gData.nsm for backward compatibility — old sessions won't
@@ -392,7 +404,7 @@ function opBuildHypHealthCardHTML(){
 function opRenderBreakdown(){
   const container=document.getElementById('op-breakdown-card');
   if(!container)return;
-  const stageRows=opBuildStageGroups();
+  const stageRows=(opGroupMode==='release')?opBuildReleaseGroups():opBuildStageGroups();
   let rowsHTML='';
   stageRows.forEach(sg=>{
     const isExpanded=opExpandedStages.has(sg.stageKey);
@@ -420,6 +432,10 @@ function opRenderBreakdown(){
       <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--divider);">
         <div style="font-size:11px;font-weight:700;color:var(--t1);text-transform:uppercase;letter-spacing:0.5px;">Outcome Breakdown</div>
         <div style="display:flex;align-items:center;gap:8px;">
+          <div class="op-group-toggle">
+            <button class="op-group-toggle-btn ${opGroupMode==='stage'?'active':''}" onclick="opSetGroupMode('stage')">By Stage</button>
+            <button class="op-group-toggle-btn ${opGroupMode==='release'?'active':''}" onclick="opSetGroupMode('release')">By Release</button>
+          </div>
           <div class="op-filter-ctrl">
             <i class="ti ti-filter" aria-hidden="true"></i>
             <select id="op-signal-filter" onchange="opSetSignalFilter(this.value)" class="op-filter-select">
@@ -434,8 +450,8 @@ function opRenderBreakdown(){
           <div class="op-filter-ctrl">
             <i class="ti ti-chart-line" aria-hidden="true"></i>
             <select id="op-metric-filter" onchange="opSetMetricFilter(this.value)" class="op-filter-select">
-              <option value="">All Metrics</option>
-              ${opGetTrackedMetrics().map(m=>`<option value="${e(m)}" ${opMetricFilter===m?'selected':''}>${e(m)}</option>`).join('')}
+              <option value="" title="All Metrics">All Metrics</option>
+              ${opGetTrackedMetrics().map(m=>`<option value="${e(m)}" title="${e(m)}" ${opMetricFilter===m?'selected':''}>${e(m)}</option>`).join('')}
             </select>
           </div>
         </div>
@@ -482,6 +498,60 @@ function opBuildStageGroups(){
   return filtered.filter(sg=>sg.features.length>0);
 }
 
+// ── By Release grouping (v9.21, Adoption Readiness §3.2) — same shape/
+// filter logic as opBuildStageGroups() above, grouping by which Release
+// Plan last touched each feature (resolved per-story via that plan's
+// storyAssignments, rolled up to feature level) instead of by value-chain
+// stage. A feature touched by multiple releases appears once per release
+// group it belongs to (same underlying hypothesis object each time — this
+// app does not persist a separate hypothesis snapshot per release, see
+// ADOPTION_READINESS_SPEC.md §5 non-goals: no per-release checkpoint
+// field). Shares opSignalFilter/opMetricFilter with the Stage view. ──
+function opBuildReleaseGroups(){
+  // A release only earns a place in the outcome breakdown once its own
+  // Adoption Readiness plan has been finalized — a draft/in-review release
+  // hasn't actually launched yet, so there's no real outcome signal to
+  // attribute to it (matches the same "draft content shouldn't count as
+  // done" principle used throughout Adoption Readiness's review gating).
+  const readinessPlans=(typeof piReadinessPlans!=='undefined'?piReadinessPlans:[]);
+  const plans=(typeof piPlans!=='undefined'?piPlans:[]).filter(p=>{
+    const rp=readinessPlans.find(r=>r.releasePlanId===p.id);
+    return rp&&rp.status==='finalized';
+  });
+  const byRelease={};
+  plans.forEach(p=>{byRelease[p.id]={stageKey:'release:'+p.id,stageLabel:p.name||'Untitled Release',features:[]};});
+  scCanvas.forEach(f=>{
+    if(!isOutcomeTrackableFeature(f))return;
+    if(!f.stories||!f.stories.length)return;
+    const storyIds=f.stories.map(s=>s.id);
+    plans.forEach(p=>{
+      const touched=storyIds.some(id=>p.storyAssignments&&p.storyAssignments[id]);
+      if(touched)byRelease[p.id].features.push(f);
+    });
+  });
+  const filtered=Object.values(byRelease).map(sg=>{
+    let filteredFeatures=opSignalFilter
+      ?sg.features.filter(f=>{
+          const sig=f.outcomeHypothesis.primary&&f.outcomeHypothesis.primary.signal;
+          const normalizedSig=sig||'awaiting';
+          return normalizedSig===opSignalFilter;
+        })
+      :sg.features;
+    if(opMetricFilter){
+      filteredFeatures=filteredFeatures.filter(f=>f.outcomeHypothesis.primary&&f.outcomeHypothesis.primary.metric===opMetricFilter);
+    }
+    return{...sg,features:filteredFeatures,aggregates:computeHypothesisAggregates(filteredFeatures)};
+  });
+  // Same rule as Stage view: a release group with zero surviving rows after
+  // filtering does not render at all — no placeholder/empty-state for it.
+  return filtered.filter(sg=>sg.features.length>0);
+}
+
+function opSetGroupMode(mode){
+  opGroupMode=(mode==='release')?'release':'stage';
+  opRenderBreakdown();
+}
+
 function opToggleStage(stageKey){
   if(opExpandedStages.has(stageKey))opExpandedStages.delete(stageKey);
   else opExpandedStages.add(stageKey);
@@ -524,9 +594,27 @@ function opCountPulseExperimentsForMetric(metricName){
 // fresh on every open so they always reflect current state (no stale
 // closures over feature id).
 function opToggleRowMenu(triggerEl,fid){
+  // v9.11.03 (Fix 9) — look up the feature via the fid this function
+  // already receives, rather than changing the call signature at
+  // opBuildStageLedgerHTML's single call site. An experiment-derived card
+  // (origin==='diagnostic', covering BOTH real-Diagnostic-Analysis-origin
+  // and Outcome-Pulse-origin — this is a structural rule about "is this
+  // card itself already an experiment," not about which mechanism produced
+  // it, per explicit decision) cannot itself be the source of a further
+  // Suggest Experiment call, to avoid an unbounded chain of experiment-of-
+  // an-experiment cards. Shown disabled with an explanatory tooltip rather
+  // than hidden outright — a PM looking at this row might reasonably
+  // wonder why the option is missing, and a taught boundary is better than
+  // a silent one, per this app's own hidden-vs-disabled convention for
+  // cases where the "why" matters to the user.
+  const _feat=scCanvas.find(function(f){return f.id===fid;});
+  const _isExperimentDerived=!!(_feat&&_feat.origin==='diagnostic');
+  const _suggestItem=_isExperimentDerived
+    ?'<div class="tm-menu-item" role="menuitem" tabindex="-1" aria-disabled="true" style="color:var(--label);cursor:not-allowed;" title="Experiments can only be generated for original features, not experiment-derived ones.">Suggest Experiment</div>'
+    :'<div class="tm-menu-item" role="menuitem" tabindex="-1" onclick="_uiRowMenuClose();opOpenSuggestExperimentModal(\''+fid.replace(/'/g,"\\'")+'\')">Suggest Experiment</div>';
   const menuHtml='<div style="width:170px;background:#fff;border:1px solid var(--divider);border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,0.12);overflow:hidden;">'
     +'<div class="tm-menu-item" role="menuitem" tabindex="-1" onclick="_uiRowMenuClose();opOpenHypothesisModal(\''+fid.replace(/'/g,"\\'")+'\')">Log Result</div>'
-    +'<div class="tm-menu-item" role="menuitem" tabindex="-1" onclick="_uiRowMenuClose();opOpenSuggestExperimentModal(\''+fid.replace(/'/g,"\\'")+'\')">Suggest Experiment</div>'
+    +_suggestItem
     +'<div class="tm-menu-item" role="menuitem" tabindex="-1" onclick="_uiRowMenuClose();opOpenExperimentLibrary(\''+fid.replace(/'/g,"\\'")+'\')">Experiment Library</div>'
     +'</div>';
   _uiRowMenuToggle(triggerEl,menuHtml);
@@ -588,7 +676,14 @@ function opBuildStageLedgerHTML(sg){
     // onclick — the kebab menu's "Experiment Library" item is the entry
     // point, this is informational only.
     const expCount=opCountPulseExperimentsForMetric(p.metric);
-    const expBadge=expCount>0?`<span style="background:var(--card);color:var(--t3);border:1px solid var(--divider);font-size:8px;font-weight:600;padding:2px 7px;border-radius:20px;margin-left:6px;" title="${expCount} Outcome Pulse experiment${expCount!==1?'s':''} in Experiment Library"><i class="ti ti-flask" style="font-size:8px;vertical-align:-1px;" aria-hidden="true"></i> ${expCount}</span>`:'';
+    // v9.11.03 (Fix 10) — no badge on an experiment-derived card
+    // (origin==='diagnostic'). Consistent with Fix 9: a card that can't
+    // itself spawn further experiments shouldn't display a badge inviting
+    // exactly that action — reported live as a "cyclical loop" appearance
+    // (an experiment-derived feature showing the same experiment-count
+    // badge as the original feature it came from, since both share the
+    // same tracked metric).
+    const expBadge=(expCount>0&&f.origin!=='diagnostic')?`<span style="background:var(--card);color:var(--t3);border:1px solid var(--divider);font-size:8px;font-weight:600;padding:2px 7px;border-radius:20px;margin-left:6px;" title="${expCount} Outcome Pulse experiment${expCount!==1?'s':''} in Experiment Library"><i class="ti ti-flask" style="font-size:8px;vertical-align:-1px;" aria-hidden="true"></i> ${expCount}</span>`:'';
     const _canEditOpRow=(typeof canEditSession!=='function')||canEditSession();
     rows+=`
       <tr style="${i%2===1?'background:var(--card);':''}">
@@ -779,8 +874,23 @@ function opSaveHypothesisModal(fid){
   const overlay=document.getElementById('op-hyp-modal-overlay');
   const actualInput=document.getElementById('op-modal-actual-input');
   const workingSignal=overlay?overlay.dataset.opWorkingSignal:'';
-  feat.outcomeHypothesis.primary.actual=actualInput&&actualInput.value!==''?Number(actualInput.value):null;
-  feat.outcomeHypothesis.primary.signal=workingSignal||null;
+  const _newActual=actualInput&&actualInput.value!==''?Number(actualInput.value):null;
+  feat.outcomeHypothesis.primary.actual=_newActual;
+  // v9.11.04 (Fix 12) — previously saved signal:null whenever no pill was
+  // explicitly clicked, even if a valid actual was entered — indistinguishable
+  // from a feature where no result has ever been logged at all (reported
+  // live: actual entered, Signal column still showed "Awaiting"). An
+  // explicit pill click always wins; only when the PM never touched a
+  // pill does this fall back to the same suggested signal already
+  // computed and displayed live next to the actual input
+  // (opRecomputeModalSuggestion) — computed here from a temp object using
+  // the about-to-be-saved actual, not feat.outcomeHypothesis.primary's
+  // still-stale pre-save value, matching that same live-hint logic
+  // exactly. No visible marker distinguishing an auto-filled signal from
+  // an explicitly clicked one, per explicit decision.
+  const _tempPrimaryForSuggestion={...feat.outcomeHypothesis.primary,actual:_newActual};
+  const _suggestedSignal=(typeof computeSuggestedSignal==='function')?computeSuggestedSignal(_tempPrimaryForSuggestion):null;
+  feat.outcomeHypothesis.primary.signal=workingSignal||_suggestedSignal||null;
   feat.outcomeHypothesis.primary.loggedAt=new Date().toISOString();
   // Secondary actuals
   (feat.outcomeHypothesis.secondary||[]).forEach((s,i)=>{
@@ -873,7 +983,11 @@ async function opDownloadReport(){
     const usableHeight=pageHeight-(margin*2);
     const imgWidth=usableWidth;
     const imgHeight=(canvas.height*imgWidth)/canvas.width;
-    const imgData=canvas.toDataURL('image/png');
+    // JPEG at high quality instead of lossless PNG — a raster screenshot of
+    // UI (mostly flat colour/text, no photographic detail) gains nothing
+    // from PNG's lossless encoding but pays for it in file size; JPEG at
+    // 0.92 cuts export size dramatically with no visible quality loss.
+    const imgData=canvas.toDataURL('image/jpeg',0.92);
     let heightRemaining=imgHeight;
     let pageIndex=0;
     while(heightRemaining>0){
@@ -884,7 +998,7 @@ async function opDownloadReport(){
       // of the same tall image through the page's own margin-bounded
       // viewport — standard jsPDF multi-page image-slicing technique.
       const yOffset=margin-(pageIndex*usableHeight);
-      pdf.addImage(imgData,'PNG',margin,yOffset,imgWidth,imgHeight);
+      pdf.addImage(imgData,'JPEG',margin,yOffset,imgWidth,imgHeight);
       heightRemaining-=usableHeight;
       pageIndex++;
     }
@@ -947,11 +1061,27 @@ function _opFindPossibleDuplicate(newExp,priorExperiments){
   return priorExperiments.find(function(x){return norm(x.experimentTitle)===newTitle;})||null;
 }
 
+// v9.25 — single shared close path for the suggest-experiment overlay,
+// used by every trigger (X button, Escape key, both Cancel/Close buttons
+// rendered in the two result states) instead of each calling .remove()
+// independently — voiceStopActive() is a safe no-op if the refine box
+// (only present in the no-recommendation state) isn't the active instance.
+function _opCloseSuggestOverlay(){
+  voiceStopActive('abort');
+  const overlay=document.getElementById('op-suggest-overlay');
+  if(overlay)overlay.remove();
+}
+
 function opOpenSuggestExperimentModal(fid){
   const feat=scCanvas.find(function(f){return f.id===fid;});
   if(!feat||!feat.outcomeHypothesis)return;
-  const existing=document.getElementById('op-suggest-overlay');
-  if(existing)existing.remove();
+  // v9.25 code-review fix — was a raw .remove() that bypassed
+  // _opCloseSuggestOverlay(), the shared close path added specifically so
+  // every removal of this overlay stops dictation first. Reachable if this
+  // is invoked a second time (e.g. from the Experiment Library) while a
+  // prior overlay — possibly with an active mic in its "no recommendation"
+  // state — is still open.
+  _opCloseSuggestOverlay();
   _opSuggestCurrentResult=null;
   const overlay=document.createElement('div');
   overlay.className='modal-overlay';
@@ -960,7 +1090,7 @@ function opOpenSuggestExperimentModal(fid){
   document.body.appendChild(overlay);
   if(typeof trapFocus==='function')trapFocus(overlay);
   const _esc=function(ev){
-    if(ev.key==='Escape'){overlay.remove();document.removeEventListener('keydown',_esc,true);}
+    if(ev.key==='Escape'){_opCloseSuggestOverlay();document.removeEventListener('keydown',_esc,true);}
   };
   document.addEventListener('keydown',_esc,true);
   overlay.dataset.escHandlerAttached='1';
@@ -970,7 +1100,7 @@ function opOpenSuggestExperimentModal(fid){
 function _opSuggestModalShell(feat){
   const p=feat.outcomeHypothesis.primary;
   return`<div class="modal" style="max-width:420px;position:relative;">
-    <button onclick="document.getElementById('op-suggest-overlay').remove()"
+    <button onclick="_opCloseSuggestOverlay()"
       style="position:absolute;top:12px;right:12px;background:none;border:none;cursor:pointer;
       padding:3px;color:var(--t3);display:flex;align-items:center;border-radius:4px;z-index:1;"
       title="Close">
@@ -990,13 +1120,32 @@ function _opSuggestModalShell(feat){
   </div>`;
 }
 
+// v9.11.05 (Fix 17) — rotating sub-message during generation, a lightweight
+// setInterval pattern (not the heavier multi-step stepper used in
+// diagnostic-view.js's full analysis loader — this modal is small and the
+// call is fast, so a single rotating text line fits better than importing
+// extra stepper structure).
+const OP_SUGGEST_LOADING_MESSAGES=[
+  'Generating a suggestion...',
+  'Comparing against this feature\'s hypothesis...',
+  'Looking for an angle that could move the metric...'
+];
+
 function _opSuggestLoadingHTML(){
   return`<div style="display:flex;align-items:center;gap:8px;padding:16px 0;color:var(--t3);font-size:11px;">
-    <i class="ti ti-loader-2" style="font-size:13px;animation:spin 1s linear infinite;" aria-hidden="true"></i> Generating a suggestion...
+    <i class="ti ti-loader-2" style="font-size:13px;animation:spin 1s linear infinite;" aria-hidden="true"></i> <span id="op-suggest-loading-msg">${OP_SUGGEST_LOADING_MESSAGES[0]}</span>
   </div>`;
 }
 
 async function _opRunSuggestExperiment(fid,refinement){
+  // v9.25 — single choke point: EVERY invocation of this function (the
+  // initial empty-refinement call on modal open, or a PM-submitted
+  // refinement from the no-recommendation state) immediately wipes bodyEl
+  // below to show a loader — the only place #op-suggest-refine-txt is ever
+  // destroyed. Also covers stop-on-send, since refinement (the param) was
+  // already read synchronously from the live textarea value before this
+  // function was even called.
+  voiceStopActive('abort');
   const feat=scCanvas.find(function(f){return f.id===fid;});
   if(!feat)return;
   const overlay=document.getElementById('op-suggest-overlay');
@@ -1008,19 +1157,54 @@ async function _opRunSuggestExperiment(fid,refinement){
   const footerEl=document.getElementById('op-suggest-footer');
   if(bodyEl)bodyEl.innerHTML=_opSuggestLoadingHTML();
   if(footerEl)footerEl.innerHTML='';
+  let _opSuggestMsgIdx=0;
+  const _opSuggestMsgTimer=setInterval(function(){
+    _opSuggestMsgIdx=(_opSuggestMsgIdx+1)%OP_SUGGEST_LOADING_MESSAGES.length;
+    const msgEl=document.getElementById('op-suggest-loading-msg');
+    if(msgEl)msgEl.textContent=OP_SUGGEST_LOADING_MESSAGES[_opSuggestMsgIdx];
+  },2200);
   const _diagSignal=startAiGen('Generating an experiment suggestion. Leaving now discards it.');
   try{
     const priorExperiments=_opGatherPriorExperimentsForMetric(feat.outcomeHypothesis.primary.metric);
     const promptTxt=buildOutcomePulseExperimentPrompt(feat,priorExperiments,refinement);
+    // v9.12.05 fix: removed hardcoded 'claude-haiku-4-5-20251001' override,
+    // which completely bypassed resolveModel()'s Optimized/user-choice
+    // precedence chain — confirmed a real gap, not deliberate. Passing null
+    // now lets this caller correctly resolve via CALLER_MODEL_DEFAULTS
+    // (registered as 'claude-sonnet-4-6' for Optimized, api.js), same as
+    // every other caller in this app.
     const txt=await callAPI(
       'You are a senior product growth consultant. Respond ONLY with valid strict JSON. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.',
-      promptTxt,2000,_diagSignal,'claude-haiku-4-5-20251001','outcome-pulse-suggest'
+      promptTxt,2000,_diagSignal,null,'outcome-pulse-suggest'
     );
     endAiGen();
     if(!_opSuggestOverlayStillCurrent(_attempt.id))return; // stale/abandoned — discard silently
     const clean=txt.replace(/```json|```/g,'').trim();
     let parsed;
     try{parsed=JSON.parse(clean);}catch(pe){throw new Error('Could not read the suggestion. Please try again.');}
+    // v9.11.01 (Fix 3) — canonicalize the metric identity as a full unit,
+    // not just linkedMetricName in isolation. The AI is free to paraphrase
+    // the metric name in its JSON response; _laResolveStageFromMetric()
+    // requires EXACT string equality against the live KPI tree, so any
+    // drift here silently breaks stage resolution and falls back to the
+    // AI's own less-reliable lifecycleStage guess — reproduced live in
+    // testing (an Acquisition-stage feature's generated experiment landed
+    // under Activation). feature.outcomeHypothesis.primary.metric is the
+    // known-correct string already driving this feature's own tracking —
+    // overwritten unconditionally, not just as a fallback for a missing
+    // value. Sibling fields (successMetric.metricName) are corrected too,
+    // so nothing downstream can disagree with the canonical string; the
+    // metric IDs are nulled rather than preserving a possibly-hallucinated
+    // value with nothing real to validate it against.
+    if(!parsed.no_recommendation){
+      const canonicalMetric=feat.outcomeHypothesis.primary.metric;
+      parsed.linkedMetricName=canonicalMetric;
+      parsed.linkedMetricId=null;
+      if(parsed.successMetric&&typeof parsed.successMetric==='object'){
+        parsed.successMetric.metricName=canonicalMetric;
+        parsed.successMetric.metricId=null;
+      }
+    }
     if(parsed.no_recommendation){
       _opSuggestCurrentResult=null;
       _opRenderSuggestNoRecommendation(fid,parsed.reason||'No unexplored angles found for this metric right now.');
@@ -1032,7 +1216,9 @@ async function _opRunSuggestExperiment(fid,refinement){
     endAiGen();
     if(!_opSuggestOverlayStillCurrent(_attempt.id))return;
     if(bodyEl)bodyEl.innerHTML=`<div style="font-size:11px;color:var(--red);padding:12px 0;">Error: ${e(err.message)}</div>`;
-    if(footerEl)footerEl.innerHTML=`<button class="modal-cancel-btn" onclick="document.getElementById('op-suggest-overlay').remove()">Close</button>`;
+    if(footerEl)footerEl.innerHTML=`<button class="modal-cancel-btn" onclick="_opCloseSuggestOverlay()">Close</button>`;
+  }finally{
+    clearInterval(_opSuggestMsgTimer);
   }
 }
 
@@ -1067,11 +1253,14 @@ function _opRenderSuggestNoRecommendation(fid,reason){
       <i class="ti ti-info-circle" style="font-size:13px;color:#854F0B;margin-top:1px;" aria-hidden="true"></i>
       <div style="font-size:11px;color:#63380A;line-height:1.5;">${e(reason)}</div>
     </div>
-    <div style="font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);margin-bottom:6px;">Add context to try again</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+      <div style="font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Add context to try again</div>
+      <div style="position:relative;">${(typeof voiceButtonHtml==='function')?voiceButtonHtml({textareaId:'op-suggest-refine-txt',buttonId:'op-suggest-voice-btn',statusId:'op-suggest-voice-status'}):''}</div>
+    </div>
     <textarea id="op-suggest-refine-txt" style="width:100%;box-sizing:border-box;border:1px solid var(--divider);border-radius:6px;padding:8px 10px;font-size:11px;font-family:var(--font);resize:none;" rows="3" placeholder="e.g. Focus on returning users, not first-time signups..."></textarea>
   `;
   footerEl.innerHTML=`
-    <button class="modal-cancel-btn" onclick="document.getElementById('op-suggest-overlay').remove()">Cancel</button>
+    <button class="modal-cancel-btn" onclick="_opCloseSuggestOverlay()">Cancel</button>
     <button id="op-suggest-regen-with-context-btn" class="modal-confirm-btn" onclick="_opRunSuggestExperiment('${e(fid)}',document.getElementById('op-suggest-refine-txt').value.trim())">Generate</button>
   `;
 }
@@ -1105,7 +1294,46 @@ async function _opAcceptSuggestedExperiment(fid){
     primaryBottleneckMetric:exp.linkedMetricName||p.metric,
     problemStatement:p.rationale||('Outcome Pulse iteration on '+p.metric),
     experiments:[exp],
-    source:'outcome-pulse'
+    source:'outcome-pulse',
+    // v9.11.02 (Fix 7) — the real originating feature's own capability and
+    // stage, captured here since this is the only point in the whole flow
+    // where they're known with certainty (opOpenSuggestExperimentModal()
+    // cannot even open without a resolvable feat). Consumed by
+    // laSendToStoryCanvas() to place the resulting card under the SAME
+    // real hierarchy the feature already lives in, instead of falling
+    // through to the synthetic "Diagnostic Experiments — {metric}"
+    // capability that mechanism was built for real Diagnostic Analysis
+    // experiments (which genuinely have no originating feature) — not for
+    // this origin, which always has one.
+    originFeatureCap:feat.cap,
+    originFeatureStage:feat.stage,
+    // v9.11.03 (Fix 8) — the real KPI-tree metric string, distinct from
+    // outcomeHypothesis.primary.metric (a separate, free-text label that
+    // happens to often match but isn't the same field). Feature Canvas
+    // groups cards by stage+metric (fcRenderCanvas()) — capturing cap/
+    // stage alone (v9.11.02) was not sufficient; without this, the new
+    // card's metric came from the hypothesis label instead, causing a
+    // second, duplicate stage section to appear even with the correct
+    // stage/capability otherwise in place. Also carries forward the
+    // original hypothesis's current actual/baseline/target so the new
+    // sibling card can inherit sensible values instead of showing blank
+    // baseline/target (reported live).
+    originFeatureMetric:feat.metric,
+    originHypothesisActual:p.actual,
+    originHypothesisBaseline:p.baseline,
+    originHypothesisTarget:p.target,
+    // v9.11.04 (Fix 11) — the original feature's OWN hypothesis metric
+    // label, distinct from feat.metric above. By original v9.10.00 design
+    // (see buildCapFeaturesPrompt()'s explicit instruction), a feature's
+    // outcomeHypothesis.primary.metric is deliberately allowed to be MORE
+    // GRANULAR than the KPI-tree metric it's grouped under — e.g. a
+    // feature grouped under "Organic Sign-ups" might track "Share-to-
+    // Invite Conversion Rate" as its own hypothesis. The new sibling card
+    // needs to inherit THIS field for its own hypothesis, not
+    // feat.metric — using the wrong one caused the new card's METRIC
+    // column and Experiment Library lookup to both show/search the wrong
+    // string, reported live.
+    originHypothesisMetric:p.metric
   };
   productLeakAnalysis.push(run);
   const saveSessionId=(typeof _activeSessionId!=='undefined')?_activeSessionId:null;
@@ -1124,12 +1352,57 @@ async function _opAcceptSuggestedExperiment(fid){
   }catch(saveErr){
     console.warn('Session save failed after synthesizing Outcome Pulse experiment:',saveErr);
   }
-  const overlay=document.getElementById('op-suggest-overlay');
-  if(overlay)overlay.remove();
+  // v9.25 code-review fix — was a raw .remove() that bypassed
+  // _opCloseSuggestOverlay(), the 5th of the overlay's close paths and the
+  // only one this refactor missed (Accept, not just Cancel/Close/Escape/X).
+  _opCloseSuggestOverlay();
   if(typeof laRebuildSentIdsFromCanvas==='function')laRebuildSentIdsFromCanvas();
+  _opNavigateToExperimentCanvasDetail(_runId,0,true);
+}
+
+// ── _opNavigateToExperimentCanvasDetail — v9.11.01 (Fix 1 & Fix 2). Shared
+// by the Suggest Experiment modal's accept handler and Experiment Library's
+// card click handler — both need to land on Experiment Canvas with a
+// specific experiment's detail panel open; only whether to also
+// pre-select that row differs (accept: yes, so the very next click can be
+// "Send to Feature Canvas"; Library: no, since Library is pure navigation,
+// not an accept action).
+//
+// Previously (accept handler only) called laSelectRun(runId), which (a)
+// unconditionally clears leakSelectedIds ("clear selections on run
+// switch" — correct for a normal user-driven switch, wrong here) so a
+// newly-sent experiment never stayed selected, and (b) scoped
+// _laActiveRunId to only that one run, hiding every other run's
+// experiments from view (a prior Outcome Pulse experiment appeared to
+// vanish after a second one was generated). Neither behavior is wanted
+// from either caller.
+//
+// laOpenDetailPanel() has no dependency on _laActiveRunId — verified by
+// reading it directly, it's keyed purely by the runId/idx arguments — so
+// there is no need to scope the view to this run just to make the detail
+// panel open correctly. Forcing _laActiveRunId=null (All Experiments)
+// instead keeps every other run's experiments visible, including this
+// one, and avoids a worse regression: if a user had been viewing some
+// OTHER specific run beforehand, leaving _laActiveRunId untouched would
+// open a detail panel for an experiment invisible in its own list, since
+// the underlying table would still be scoped to that other run.
+//
+// Mutating leakSelectedIds directly (rather than via laToggleExperiment/
+// laToggleExperimentByRow) is safe — both of those functions do nothing
+// beyond a Set mutation, a table refresh, and a conditional detail-panel
+// resync, none of which needs replicating here since the render below
+// already covers all three.
+//
+// No manual laRenderAnalysis() call is made — switchTab('la') (invoked by
+// revealAndSwitchTab below) already calls laRenderAnalysis() once
+// internally on entering the tab; state must be set BEFORE that call so
+// the single render reflects it, not after (which would need a second,
+// redundant render).
+function _opNavigateToExperimentCanvasDetail(runId,idx,preselect){
+  _laActiveRunId=null;
+  if(preselect)leakSelectedIds.add(runId+'|'+idx);
   if(typeof revealAndSwitchTab==='function')revealAndSwitchTab('la');
-  if(typeof laSelectRun==='function')laSelectRun(_runId);
-  if(typeof laOpenDetailPanel==='function')laOpenDetailPanel(_runId,0);
+  if(typeof laOpenDetailPanel==='function')laOpenDetailPanel(runId,idx);
 }
 
 // ── Experiment Library panel (v9.11) — read-only, shared single instance
@@ -1140,16 +1413,28 @@ async function _opAcceptSuggestedExperiment(fid){
 // excluded, per explicit decision, distinct from the broader dedup context
 // fed to the generation prompt itself.
 let _opLibraryMetric=null;
+// v9.11.04 (Fix 14/6) — the specific feature id that opened Library, kept
+// alongside the derived metric string. Needed because after Fix 11, two
+// sibling cards (an original feature and its experiment-derived
+// counterpart) can legitimately share the identical hypothesis metric
+// string — a metric-only re-lookup (scCanvas.find() by metric, matching
+// whichever card happens to come first in array order) could silently
+// resolve to the WRONG sibling's origin, incorrectly gating the empty-
+// state "Suggest Experiment" CTA. Storing the exact fid removes that
+// ambiguity entirely.
+let _opLibraryFeatureId=null;
 
 function opOpenExperimentLibrary(fid){
   const feat=scCanvas.find(function(f){return f.id===fid;});
   if(!feat||!feat.outcomeHypothesis)return;
   _opLibraryMetric=feat.outcomeHypothesis.primary.metric;
+  _opLibraryFeatureId=fid;
   _opRenderExperimentLibrary();
 }
 
 function opCloseExperimentLibrary(){
   _opLibraryMetric=null;
+  _opLibraryFeatureId=null;
   const panel=document.getElementById('op-lib-panel');
   if(panel){panel.classList.remove('op-lib-panel-open');panel.innerHTML='';}
 }
@@ -1171,9 +1456,18 @@ function _opLibraryStatusChipHTML(runId,expIdx){
 function _opRenderExperimentLibrary(){
   const panel=document.getElementById('op-lib-panel');
   if(!panel||!_opLibraryMetric)return;
-  const anchorFeat=scCanvas.find(function(f){
-    return isOutcomeTrackableFeature(f)&&f.outcomeHypothesis.primary.metric===_opLibraryMetric;
-  });
+  // v9.11.04 (Fix 14/6) — resolve by the exact fid captured on open, not a
+  // fresh metric-only scCanvas.find(). Falls back to the old metric-only
+  // lookup only if the stored fid's feature no longer exists (e.g.
+  // deleted between opening Library and this render) — matching this
+  // panel's existing "always re-derive live" convention rather than
+  // failing closed.
+  let anchorFeat=_opLibraryFeatureId?scCanvas.find(function(f){return f.id===_opLibraryFeatureId;}):null;
+  if(!anchorFeat){
+    anchorFeat=scCanvas.find(function(f){
+      return isOutcomeTrackableFeature(f)&&f.outcomeHypothesis.primary.metric===_opLibraryMetric;
+    });
+  }
   const p=anchorFeat?anchorFeat.outcomeHypothesis.primary:null;
   const hasBaseline=p&&p.baseline!==null&&p.baseline!==undefined;
   const hasTarget=p&&p.target!==null&&p.target!==undefined;
@@ -1188,15 +1482,34 @@ function _opRenderExperimentLibrary(){
       if(exp.linkedMetricName===_opLibraryMetric)items.push({run:run,exp:exp,idx:idx});
     });
   });
+  // v9.11.04 (Fix 14) — the anchor feature's own origin, resolved from the
+  // exact fid captured on open (see above) — same gate already used for
+  // the kebab menu's disabled "Suggest Experiment" state (Fix 9/13), so
+  // the empty-state CTA never invites an action that's actually unavailable
+  // from this specific row.
+  const _isAnchorExperimentDerived=!!(anchorFeat&&anchorFeat.origin==='diagnostic');
   const cardsHTML=items.length
     ?items.map(function(it){
-        return`<div class="op-lib-card">
+        // v9.11.01 (Fix 2): clickable card navigating to Experiment Canvas's
+        // detail panel for this exact experiment. Reuses the same shared
+        // navigation helper as the Suggest Experiment modal's accept
+        // handler, minus pre-selection (this is pure read navigation, not
+        // an accept action). No permission gating needed — navigating to
+        // view a detail panel mutates nothing, so a read-only session can
+        // use this identically to an editable one. tabindex+role+onkeydown
+        // give it real keyboard access, not just a mouse-only click zone.
+        return`<div class="op-lib-card" role="button" tabindex="0" style="cursor:pointer;"
+          onclick="_opNavigateToExperimentCanvasDetail('${e(it.run.runId)}',${it.idx},false)"
+          onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();_opNavigateToExperimentCanvasDetail('${e(it.run.runId)}',${it.idx},false);}">
           <div class="op-lib-card-title">${e(it.exp.experimentTitle||'')}</div>
           <div class="op-lib-card-desc">${e(it.exp.description||it.exp.hypothesis||'')}</div>
           ${_opLibraryStatusChipHTML(it.run.runId,it.idx)}
         </div>`;
       }).join('')
-    :`<div style="text-align:center;color:var(--t3);font-size:11px;padding:24px 0;">No Outcome Pulse experiments suggested yet for this metric.</div>`;
+    :`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:var(--t3);font-size:11px;flex:1;padding:24px 0;">
+        <div style="margin-bottom:${(!_isAnchorExperimentDerived&&anchorFeat)?'12px':'0'};">No Outcome Pulse experiments suggested yet for this metric.</div>
+        ${(!_isAnchorExperimentDerived&&anchorFeat)?`<button class="gen-btn" style="width:auto;padding:8px 14px;font-size:11px;" onclick="opCloseExperimentLibrary();opOpenSuggestExperimentModal('${e(anchorFeat.id)}')"><i class="ti ti-sparkles" style="font-size:11px;" aria-hidden="true"></i> Suggest Experiment</button>`:''}
+      </div>`;
   panel.innerHTML=`
     <div class="cc-feat-panel-hdr" style="position:relative;">
       <div style="font-size:9px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;color:var(--blue);">Experiment Library</div>
@@ -1208,7 +1521,7 @@ function _opRenderExperimentLibrary(){
       </button>
     </div>
     <div class="cc-feat-panel-scroll">
-      <div style="font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);margin-bottom:8px;">Experiments</div>
+      ${items.length?`<div style="font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);margin-bottom:8px;">Experiments</div>`:''}
       ${cardsHTML}
     </div>
   `;

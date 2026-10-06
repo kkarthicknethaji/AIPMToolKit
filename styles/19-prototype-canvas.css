@@ -56,6 +56,10 @@
 .pc-refine-inner{display:flex;flex-direction:column;gap:5px;}
 .pc-refine-label{font-size:9px;font-weight:700;color:var(--label);letter-spacing:0.4px;text-transform:uppercase;}
 .pc-refine-row{display:flex;gap:6px;align-items:flex-end;}
+/* Mic (shared voice-input.js, styles/25-voice-input.css) grouped tightly
+   with Regenerate. position:relative anchors .vi-status's absolute
+   positioning. */
+.pc-refine-btn-group{display:flex;gap:4px;flex-shrink:0;position:relative;}
 .pc-refine-input{
   flex:1;border:1px solid var(--divider);border-radius:6px;
   padding:7px 10px;font-size:11px;font-family:var(--font);

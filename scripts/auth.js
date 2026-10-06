@@ -14,22 +14,28 @@
 // session-store.js's company-scoped queries.
 const _PGT_ACTIVE_COMPANY_KEY = 'pgt_active_company_id';
 
-// ── Shared BYOK sessionStorage key helper (v8.105) ──
+// ── Shared BYOK sessionStorage key helper (v8.105, provider-scoped v9.14) ──
 // The API key was previously stored under one fixed sessionStorage slot,
 // shared identically across every company a user belongs to — entering a
 // key while working in Company A silently applied it in Company B too, with
-// nothing about the storage even aware companies existed. Now scoped by the
-// active company id: each company gets its own independent slot. Defined
-// once here (auth.js loads before api.js, settings.js, and settings-page.js
-// — the three files that read/write this) rather than duplicated in each.
+// nothing about the storage even aware companies existed. Scoped by the
+// active company id since v8.105: each company gets its own independent
+// slot. v9.14 adds a provider dimension on top of that existing, working
+// scoping — company-scoping itself is NOT being redesigned here (see
+// multi-llm-provider-spec-DRAFT.md Section 4.2/2.6 for the record of an
+// earlier draft that wrongly assumed company-scoping was the missing piece).
+// Defined once here (auth.js loads before api.js, settings.js, and
+// settings-page.js — the three files that read/write this) rather than
+// duplicated in each.
 function _byokKey() {
   const companyId = (function(){ try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || ''; } catch(e) { return ''; } })();
-  return 'hcl_ak_' + (companyId || 'none');
+  const provider = (typeof appSettings !== 'undefined' && appSettings.provider) ? appSettings.provider : 'anthropic';
+  return 'hcl_ak_' + (companyId || 'none') + '_' + provider;
 }
 
-// One-time migration on first load after this shipped: if a key exists
-// under the old unscoped slot and the new company-scoped slot is still
-// empty, carry it forward into whichever company is active right now.
+// One-time migration on first load after v8.105 shipped: if a key exists
+// under the old unscoped slot ('hcl_ak') and the new company-scoped slot is
+// still empty, carry it forward into whichever company is active right now.
 // FIXED in v8.106 — the old key must be cleared after copying it forward,
 // not left in place. Leaving it meant this ran again on every subsequent
 // company switch, and since every newly-visited company's slot starts
@@ -46,6 +52,33 @@ function _migrateByokKeyIfNeeded() {
       sessionStorage.setItem(newSlot, oldKey);
     }
     sessionStorage.removeItem('hcl_ak');
+  } catch(e) {}
+}
+
+// v9.14: second migration step, for the shape this feature itself
+// introduces. Today's live key shape (v8.105-v9.13) is company-scoped but
+// NOT provider-scoped: 'hcl_ak_<companyId>'. _byokKey() above now returns
+// 'hcl_ak_<companyId>_<provider>' instead — without this step, every
+// existing user's already-entered Anthropic key would be silently orphaned
+// on first load after this ships (present under the old slot, but never
+// read again since every consumer now goes through the new provider-suffixed
+// _byokKey()). Carries the old company-scoped key forward into the new
+// '..._anthropic' slot (provider defaults to 'anthropic' pre-migration,
+// since that's the only provider that existed before this feature).
+// Applies the same v8.106 lesson: the old slot MUST be cleared after
+// copying, not left in place, or it will re-copy on every subsequent
+// company switch exactly like the original bug this comment describes above.
+function _migrateByokKeyToProviderScopeIfNeeded() {
+  try {
+    const companyId = (function(){ try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || ''; } catch(e) { return ''; } })();
+    const oldSlot = 'hcl_ak_' + (companyId || 'none'); // pre-v9.14 shape, no provider suffix
+    const oldKey = sessionStorage.getItem(oldSlot);
+    if (!oldKey) return;
+    const newSlot = _byokKey(); // provider defaults to 'anthropic' when appSettings.provider is unset
+    if (!sessionStorage.getItem(newSlot)) {
+      sessionStorage.setItem(newSlot, oldKey);
+    }
+    sessionStorage.removeItem(oldSlot);
   } catch(e) {}
 }
 

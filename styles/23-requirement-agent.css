@@ -1,0 +1,152 @@
+/* REQUIREMENT AGENT (ra) — v9.16
+   Three-panel layout (conversation list / chat / live draft), mirroring
+   Guided Launch's three-zone shell (22-guided-launch.css) but as three
+   persistent columns rather than a collapsible left+center+collapsible-right
+   pair — Requirement Agent's left panel is a real conversation list, not a
+   session summary, so it stays open by design (no collapse affordance).
+   .gl-msg-row/.gl-avatar/.gl-bubble/.gl-typing-* classes are reused directly
+   from 22-guided-launch.css — intentionally NOT redefined here. */
+
+.ra-tab{display:none;flex-direction:row;flex:1;overflow:hidden;}
+.ra-tab.on{display:flex;}
+
+/* ── Left panel: conversation list ──
+   #ra-left carries the real global .left class (300px, collapsible — see
+   DESIGN_SYSTEM.md §4) plus its own .ra-left modifier for the body layout
+   below the shared .ph header. raTogglePanel() mirrors
+   left-panel.js's togglePanel()/guided-launch.js's glTogglePanel()
+   exactly, scoped to #ra-left/its own icon ids so it can't interfere with
+   the Discovery Map panel or Guided Launch's own #gl-left. */
+.ra-left-body{flex:1;overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;min-height:0;}
+.ra-left-body::-webkit-scrollbar{width:3px;}
+.ra-left-body::-webkit-scrollbar-thumb{background:var(--divider);border-radius:2px;}
+.ra-left.collapsed .ra-left-body{display:none;}
+.ra-filter-chips{display:flex;gap:6px;padding-bottom:10px;flex-shrink:0;}
+.ra-chip{font-size:10px;font-weight:600;color:var(--t3);background:var(--card);border:1px solid var(--divider);border-radius:12px;padding:4px 10px;cursor:pointer;font-family:var(--font);}
+.ra-chip.active{background:var(--purple);color:#fff;border-color:var(--purple);}
+.ra-conv-list{flex:1;overflow-y:auto;min-height:0;}
+.ra-conv-list::-webkit-scrollbar{width:3px;}
+.ra-conv-list::-webkit-scrollbar-thumb{background:var(--divider);border-radius:2px;}
+.ra-conv-empty{font-size:11px;color:var(--t3);padding:16px 8px;text-align:center;}
+.ra-conv-card{padding:10px 12px;border-radius:8px;cursor:pointer;margin-bottom:6px;border:1px solid transparent;}
+.ra-conv-card:hover{background:var(--card);}
+.ra-conv-card.active{background:var(--card-purple);border-color:#CECBF6;}
+.ra-conv-title-row{display:flex;align-items:center;justify-content:space-between;gap:6px;}
+.ra-conv-title{font-size:12px;font-weight:600;color:var(--t1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.ra-rq-tag{display:inline-block;font-size:9px;font-weight:700;background:var(--purple);color:#fff;border-radius:8px;padding:1px 6px;margin-right:4px;}
+.ra-conv-rename-btn{background:none;border:none;cursor:pointer;color:var(--t3);flex-shrink:0;padding:2px;}
+.ra-conv-summary{font-size:10px;color:var(--t3);margin-top:3px;}
+.ra-rename-input{font-size:12px;font-weight:600;color:var(--t1);border:1px solid var(--purple);border-radius:4px;padding:2px 6px;width:100%;font-family:var(--font);}
+.ra-new-conv-btn{flex-shrink:0;margin-top:8px;padding:9px 12px;border-radius:7px;border:none;background:var(--purple);color:#fff;font-size:11px;font-weight:700;font-family:var(--font);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;}
+
+/* ── Center: chat ── */
+.ra-center{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden;border-right:1px solid var(--divider);}
+/* v9.17.03 — padding matched to .ph's real 10px 12px (04-left-panel.css)
+   so the header divider lines up in one straight line across the left
+   panel, chat panel, and Live Draft panel. Title forced to a single line
+   (nowrap+ellipsis) — a long conversation title previously wrapped to 2
+   lines here (unlike the other two panels' shorter fixed labels), blowing
+   this header's height out to ~79px against the other panels' ~51-54px and
+   breaking the straight-line alignment; confirmed via live measurement. */
+.ra-chat-hdr{padding:10px 20px;border-bottom:1px solid var(--divider);flex-shrink:0;}
+.ra-chat-hdr-eyebrow{font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--purple);}
+.ra-chat-hdr-title{font-size:14px;font-weight:700;color:var(--t1);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.ra-chat-body{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:14px;}
+.ra-chat-body::-webkit-scrollbar{width:3px;}
+.ra-chat-body::-webkit-scrollbar-thumb{background:var(--divider);border-radius:2px;}
+.ra-chat-input-wrap{border-top:1px solid var(--divider);padding:12px 16px;flex-shrink:0;}
+.ra-chat-input-row{display:flex;gap:10px;align-items:flex-end;}
+.ra-chat-input{flex:1;resize:none;border:1px solid var(--divider);border-radius:8px;padding:9px 12px;font-size:12px;font-family:var(--font);color:var(--t1);background:var(--surface);max-height:120px;}
+/* ── Mic (shared voice-input.js, styles/25-voice-input.css) grouped
+   tightly with Send (4px internal gap) at the row's right edge; the row's
+   own 10px gap (above) is the looser separation between the textarea and
+   this group — spacing asymmetry alone communicates the grouping, per
+   DESIGN_SYSTEM.md's no-new-components rule. Two independent buttons,
+   never a single mic/send-morphing button (would hide the mic once any
+   text exists). position:relative here anchors .vi-status's absolute
+   positioning (25-voice-input.css). ── */
+.ra-chat-btn-group{display:flex;gap:4px;flex-shrink:0;position:relative;}
+.ra-chat-send{width:32px;height:32px;border-radius:8px;background:var(--purple);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.ra-chat-send:disabled{opacity:0.5;cursor:not-allowed;}
+.ra-finalized-note{font-size:11px;color:var(--t3);text-align:center;padding:6px 0;}
+.ra-empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;text-align:center;padding:40px;}
+
+/* ── Attached-documents list (#ra-attached-docs, raRenderAttachedDocs()) ──
+   v9.30.03 — read-only traceability line, not a management surface (no
+   remove control, no per-file pill/icon — see the function's own comment
+   for why). :not(:empty) keeps the box at 0 height when there's nothing to
+   show (innerHTML is set to '' in that case). */
+.ra-attached-docs:not(:empty){padding:8px 16px 0;}
+.ra-doc-list-plain{font-size:10.5px;color:var(--t3);line-height:1.6;}
+.ra-doc-plain-item{color:var(--t2);}
+.ra-doc-plain-sep{margin:0 6px;color:var(--divider);}
+
+/* ── Right: live draft ──
+   Standard 440px right-panel width (DESIGN_SYSTEM.md §5) + the mandatory
+   chrome-content-chrome anatomy: var(--card) header/footer framing a #fff
+   scrollable body. Previously the header/footer had no background (both
+   inherited .ra-right's var(--surface)) and the eyebrow used non-standard
+   letter-spacing/colour — both brought in line with §5 here. */
+.ra-right{width:440px;min-width:440px;flex-shrink:0;display:flex;flex-direction:column;overflow:hidden;background:#fff;}
+.ra-md-collapsed-rail{width:26px;min-width:26px;background:var(--card);border-left:1px solid var(--divider);display:none;flex-direction:column;align-items:center;padding-top:14px;flex-shrink:0;cursor:pointer;}
+.ra-md-collapsed-rail.show{display:flex;}
+.ra-md-collapsed-rail:hover{background:var(--purple-pale);}
+.ra-md-collapsed-rail svg{stroke:var(--t3);}
+.ra-md-collapsed-rail:hover svg{stroke:var(--purple);}
+.ra-md-collapsed-label{writing-mode:vertical-rl;font-size:9px;font-weight:700;letter-spacing:0.6px;color:var(--t3);margin-top:10px;}
+/* v9.17.03 — padding trimmed to match .ph's/.ra-chat-hdr's bottom edge
+   exactly (was 2-3px taller, off the shared straight line). Title forced to
+   a single line for the same reason as .ra-chat-hdr-title above. */
+.ra-md-hdr{padding:10px 14px;border-bottom:1px solid var(--divider);background:var(--card);flex-shrink:0;display:flex;align-items:center;justify-content:space-between;gap:12px;}
+.ra-md-hdr-text{flex:1;min-width:0;overflow:hidden;}
+.ra-md-hdr-eyebrow{font-size:9px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;color:var(--purple);}
+.ra-md-hdr-title{font-size:13px;font-weight:700;color:var(--t1);line-height:1.3;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.ra-md-hdr-ver{font-size:10px;font-weight:400;color:var(--t3);}
+.ra-md-hdr-actions{display:flex;gap:6px;align-items:center;flex-shrink:0;}
+.ra-md-body{flex:1;overflow-y:auto;padding:12px 14px;font-size:12px;color:var(--t2);line-height:1.6;background:#fff;}
+.ra-md-body::-webkit-scrollbar{width:3px;}
+.ra-md-body::-webkit-scrollbar-thumb{background:var(--divider);border-radius:2px;}
+.ra-md-body h1{font-size:15px;font-weight:700;color:var(--t1);margin:0 0 10px;}
+.ra-md-body h2{font-size:13px;font-weight:700;color:var(--purple);margin:18px 0 6px;}
+.ra-md-body h3{font-size:11.5px;font-weight:700;color:var(--t1);margin:12px 0 4px;}
+.ra-md-body p{margin:0 0 8px;}
+.ra-md-body ul{margin:0 0 8px;padding-left:18px;}
+.ra-md-footer{border-top:1px solid var(--divider);padding:12px 16px;background:var(--card);flex-shrink:0;}
+.ra-footer-row{display:flex;align-items:center;justify-content:space-between;gap:12px;}
+.ra-finalize-btn{width:auto;flex-shrink:0;padding:9px 18px;border-radius:7px;border:none;background:var(--purple);color:#fff;font-size:12px;font-weight:700;font-family:var(--font);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;}
+.ra-finalize-btn:disabled,.ra-finalize-btn-disabled{opacity:0.5;cursor:not-allowed;}
+.ra-footer-note{flex:1;min-width:0;font-size:10px;color:var(--t3);text-align:left;line-height:1.5;}
+.ra-status-badge{display:inline-block;font-size:10px;font-weight:700;border-radius:10px;padding:4px 10px;}
+.ra-status-final{background:#E1F5EE;color:#085041;}
+
+/* ── Live Draft New/Existing tagging (§11 — Discovery-First Entry Point) ──
+   Capability-level pill (right-aligned within each capability sub-heading)
+   and feature-level inline "(new)" suffix + click-to-expand requirement
+   narrative. Colors derived from existing design tokens (00-tokens.css) —
+   no new colors introduced. */
+.ra-cap-tag-row{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+.ra-cap-tag-name{flex:1;min-width:0;}
+.ra-tag-pill{flex-shrink:0;font-size:9px;font-weight:700;letter-spacing:0.3px;border-radius:8px;padding:2px 8px;}
+.ra-tag-new{background:var(--green-pale);color:var(--green);}
+.ra-tag-existing{background:var(--purple-pale);color:var(--purple);}
+.ra-feat-new-suffix{color:var(--green);font-weight:700;font-size:10px;}
+.ra-feat-narr-toggle{font-family:var(--font);font-size:9px;font-weight:600;color:var(--purple);background:none;border:none;cursor:pointer;padding:0 0 0 4px;text-decoration:underline;}
+.ra-feat-narrative{font-size:10.5px;color:var(--t3);line-height:1.5;margin:2px 0 6px 4px;padding-left:8px;border-left:2px solid var(--divider);}
+
+/* ── Quick-select clarifying-question chips (11-section brief redesign) ──
+   Rendered under the newest agent chat message only, when the model
+   surfaces a proactive clarifying question (prompts.js's
+   _raClarifyingQuestionsRules()). Chips use a plain white fill with a
+   neutral divider border (option "B" from design review) — only the text
+   stays blue, keeping the block light against the message bubble's own
+   --card background rather than adding another solid color fill on top
+   of it. Distinct from the purple filter chips (.ra-chip above) and the
+   green/purple new/existing pills (.ra-tag-new/.ra-tag-existing above) —
+   "click to answer" should never look like "filter view" or "status pill"
+   at a glance. */
+.ra-quick-reply-block{margin-top:10px;padding-top:10px;border-top:1px dashed var(--divider);}
+.ra-quick-reply-target-tag{display:inline-block;font-size:9px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;color:var(--blue);background:var(--blue-pale);border-radius:8px;padding:2px 8px;margin-bottom:6px;}
+.ra-quick-reply-q{font-size:11.5px;font-weight:600;color:var(--t1);margin-bottom:6px;line-height:1.4;}
+.ra-quick-reply-row{display:flex;flex-wrap:wrap;gap:6px;}
+.ra-quick-reply-chip{font-size:11px;font-weight:400;color:var(--blue);background:#fff;border:1px solid var(--divider);border-radius:14px;padding:6px 12px;cursor:pointer;font-family:var(--font);text-align:left;}
+.ra-quick-reply-chip:hover{background:var(--card);}

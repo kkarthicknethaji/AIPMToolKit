@@ -241,6 +241,10 @@
 .cc-chat-input{flex:1;border:1px solid var(--divider);border-radius:6px;padding:7px 9px;font-size:11px;color:var(--t1);resize:none;min-height:38px;line-height:1.4;}
 .cc-chat-input:focus{outline:none;border-color:var(--purple);}
 .cc-chat-hint{font-size:9px;color:var(--label);text-align:right;}
+/* Mic (shared voice-input.js, styles/25-voice-input.css) grouped tightly
+   with Send, sitting below the "↵ send" hint. position:relative anchors
+   .vi-status's absolute positioning. */
+.cc-chat-btn-group{display:flex;gap:4px;position:relative;}
 .cc-chat-send{background:var(--purple);border:none;border-radius:6px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#fff;flex-shrink:0;}
 .cc-chat-send:hover{background:var(--purple-deep);}
 .cc-chat-send:disabled{opacity:0.4;cursor:not-allowed;}
@@ -735,9 +739,17 @@
 .cc-feat-why-edit-btn{opacity:0;transition:opacity 0.12s;}
 .cc-feat-item:hover .cc-feat-why-edit-btn{opacity:1;}
 
-/* ── CC export dropdown (v6.67) ── */
+/* ── CC export dropdown (v6.67) ──
+   v9.27 code-review fix: was position:fixed with no offsets, so every one
+   of its 5 known consumers (this file, 08-feature-canvas.css,
+   16-story-canvas-new.css x2, 14-pi-planning.css) needed an identical
+   position:absolute;right:0 !important per-id override just to render
+   on-screen near a right-edge toolbar button. Fixed the shared default
+   instead (matching .cc-addcap-drop two rules below, which already got
+   this right) so future consumers don't need their own copy of the same
+   override. The 4 now-redundant per-id rules were removed. ── */
 .cc-export-wrap{position:relative;}
-.cc-export-drop{display:none;position:fixed;background:#fff;border:1px solid var(--divider);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,0.1);min-width:240px;overflow:hidden;z-index:1000;}
+.cc-export-drop{display:none;position:absolute;top:calc(100% + 4px);right:0;left:auto;background:#fff;border:1px solid var(--divider);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,0.1);min-width:240px;overflow:hidden;z-index:1000;}
 .cc-export-drop.open{display:block;}
 
 /* ── Add Capability dropdown (v7.83) ── */

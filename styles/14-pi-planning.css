@@ -250,8 +250,13 @@ input[type=date]{cursor:pointer;font-family:var(--font);font-size:11px;}
 input[type=date],input[type=number]{font-family:var(--font)!important;font-size:11px!important;color:var(--t1)!important;background:#fff;border:1px solid var(--divider);border-radius:5px;padding:6px 9px;height:30px;outline:none;transition:border-color 0.15s;}
 input[type=date]:focus,input[type=number]:focus{border-color:var(--blue);}
 
-/* ── PI left panel collapse ── */
+/* ── PI left panel collapse ──
+   .pi-left-footer (the "+ New Release Plan" CTA) is new as of the v9.20
+   multi-plan rewrite - .gen-wrap, the only footer this rule originally
+   accounted for, no longer exists anywhere in the current markup. Without
+   this, the footer stayed visible and wrapped illegibly in the 44px rail. ── */
 .pi-left.pi-left-collapsed .pi-left-scroll,
+.pi-left.pi-left-collapsed .pi-left-footer,
 .pi-left.pi-left-collapsed .gen-wrap{display:none;}
 .pi-left.pi-left-collapsed{min-width:44px;width:44px;overflow:hidden;}
 .pi-left.pi-left-collapsed .ph-text{display:none;}
@@ -312,3 +317,71 @@ input[type=date]:focus,input[type=number]:focus{border-color:var(--blue);}
 .pi-card-dor-ready{background:#E1F5EE;color:#085041;}
 .pi-card-dor-review{background:#FFF4D7;color:#854F0B;}
 .pi-card-dor-blocked{background:#FCEBEB;color:#C0392B;}
+
+/* ── Release/Config card (ported from release-canvas-prototype.html) ──
+   Every bare `.rp-*` rule below that shares a property with the generic
+   `input[type=text],input[type=url]` (04-left-panel.css) or
+   `input[type=date],input[type=number]` (this file, above) rules needs
+   BOTH !important AND >=2-class specificity - those generic rules are
+   themselves !important, at element+attribute specificity (0,1,1), which
+   beats a single !important class (0,1,0) in a tie-break even when both
+   sides use !important. Confirmed live via computed-style inspection:
+   a lone `.rp-name-input{...!important}` still lost outright. Qualifying
+   with the ancestor class (`.rp-config-card .rp-name-input`, `.rp-meta-row
+   .rp-meta-input`, `.rp-squad-row .rp-squad-name`) raises this to two
+   classes (0,2,0), which wins regardless of element/attribute count. ── */
+.rp-config-card{width:100%;}
+.rp-config-card .rp-name-input{font-family:var(--font-d, var(--font))!important;font-size:20px!important;font-weight:400!important;color:var(--t1)!important;border:none!important;border-bottom:2px solid var(--divider)!important;width:100%;padding:4px 0 6px!important;background:transparent!important;text-align:center!important;height:auto!important;transition:border-color 0.15s;}
+.rp-config-card .rp-name-input:focus{outline:none;border-bottom-color:var(--purple)!important;box-shadow:none!important;}
+.rp-name-hint{font-size:10.5px;color:var(--t3);text-align:center;margin-top:6px;margin-bottom:16px;}
+.rp-meta-row{display:flex;align-items:center;justify-content:center;gap:0;margin-bottom:18px;}
+.rp-meta-field{text-align:center;padding:0 18px;}
+.rp-meta-field+.rp-meta-field{border-left:1px solid var(--divider);}
+.rp-meta-label{font-size:9px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:var(--label);margin-bottom:4px;}
+.rp-meta-row .rp-meta-input{border:none!important;background:none!important;font-size:13px!important;font-weight:600!important;color:var(--t1)!important;text-align:center!important;width:100px;font-family:var(--font)!important;padding:2px!important;border-radius:5px;height:auto!important;transition:background 0.12s;}
+.rp-meta-row input[type=date].rp-meta-input{width:120px;}
+.rp-meta-row .rp-meta-input:hover,.rp-meta-row .rp-meta-input:focus{background:var(--card)!important;outline:none;box-shadow:none!important;}
+.rp-meta-input::-webkit-calendar-picker-indicator{opacity:0.5;}
+.rp-section-quiet{font-size:9px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;color:var(--label);margin-bottom:8px;}
+.rp-squad-list{display:flex;flex-direction:column;gap:0;margin-bottom:8px;max-height:180px;overflow-y:auto;}
+.rp-squad-row{display:flex;align-items:center;gap:10px;padding:6px 2px;border-bottom:1px solid var(--divider);}
+.rp-squad-row .rp-squad-name{flex:1;font-size:11.5px!important;font-weight:500!important;border:none!important;background:none!important;color:var(--t1)!important;padding:2px 4px!important;border-radius:4px;height:auto!important;transition:background 0.12s;}
+.rp-squad-row .rp-squad-cap-input{width:52px;text-align:right!important;font-size:11.5px!important;font-weight:600!important;color:var(--purple)!important;border:none!important;background:none!important;padding:2px 4px!important;border-radius:4px;height:auto!important;transition:background 0.12s;}
+.rp-squad-row .rp-squad-name:hover,.rp-squad-row .rp-squad-name:focus,.rp-squad-row .rp-squad-cap-input:hover,.rp-squad-row .rp-squad-cap-input:focus{background:var(--card)!important;outline:none;box-shadow:none!important;}
+.rp-squad-cap-unit{font-size:10px;color:var(--t3);margin-left:2px;width:50px;}
+.rp-squad-remove-q{background:none;border:none;color:var(--label);cursor:pointer;padding:2px 4px;opacity:0;transition:opacity 0.12s;}
+.rp-squad-row:hover .rp-squad-remove-q{opacity:1;}
+.rp-add-squad-q{font-size:11px;color:var(--purple);background:none;border:none;padding:5px 2px;cursor:pointer;font-weight:600;display:flex;align-items:center;gap:5px;}
+.rp-total-cap{font-size:10.5px;color:var(--t3);text-align:right;padding:2px;margin-top:2px;}
+.rp-total-cap b{color:var(--t1);}
+.rp-remarks-toggle{font-size:11px;color:var(--purple);background:none;border:none;cursor:pointer;font-weight:600;padding:0;display:flex;align-items:center;gap:5px;margin:12px 0 0;}
+.rp-remarks-box{margin-top:8px;}
+.rp-divider-quiet{border:none;border-top:1px solid var(--divider);margin:14px 0 12px;}
+.rp-cta-wrap{margin-top:16px;}
+.rp-cta-sub{font-size:10px;color:var(--label);text-align:center;margin-top:8px;}
+.rp-inline-err{font-size:10px;color:var(--red);margin-top:4px;display:flex;align-items:center;justify-content:center;gap:4px;}
+.rp-meta-row .rp-meta-input.rp-err{color:var(--red)!important;}
+
+/* ── Left-panel plan cards ── dedicated component, decoupled from
+   Experiment Canvas's shared .la-run-item, but this time mirroring
+   Requirement Agent's own left-panel card (.ra-conv-card/.ra-conv-card.
+   active, 23-requirement-agent.css) VERBATIM rather than inventing a
+   different treatment: inactive rows carry NO background and a
+   transparent border (blend into the panel until hovered) - only .active
+   gets the background fill AND border color TOGETHER. A white-bg/visible-
+   border-on-every-card version was tried first and rejected: it made
+   every card look like a card, so the active one no longer stood out. ── */
+.pi-plan-card{background:transparent;border:1px solid transparent;border-radius:8px;padding:12px 14px;margin-bottom:8px;cursor:pointer;transition:background 0.12s,border-color 0.12s;}
+.pi-plan-card:hover{background:var(--card);}
+.pi-plan-card.active{background:var(--card-purple);border-color:#CECBF6;}
+.pi-plan-card-title-row{display:flex;align-items:center;justify-content:space-between;gap:6px;}
+.pi-plan-card-title{font-size:12px;font-weight:600;color:var(--t1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.pi-plan-card-meta{font-size:10.5px;color:var(--t3);margin-top:3px;}
+.pi-plan-rename-btn{background:none;border:none;cursor:pointer;color:var(--t3);flex-shrink:0;padding:2px;}
+.pi-plan-rename-input{width:100%;font-size:13px;font-weight:700;border:1px solid var(--purple);border-radius:4px;padding:1px 4px;outline:none;background:var(--card);color:var(--t1);font-family:var(--font);}
+
+/* New Release Plan CTA - matches Requirement Agent's own primary bottom-
+   panel action (.ra-new-conv-btn) rather than a dashed ghost-add affordance,
+   per explicit feedback that the dashed style wasn't evident enough. ── */
+.pi-add-plan-btn{font-size:11px;font-weight:700;color:#fff;background:var(--purple);border:none;border-radius:7px;padding:9px 12px;width:100%;cursor:pointer;margin-top:2px;display:flex;align-items:center;justify-content:center;gap:6px;font-family:var(--font);}
+.pi-add-plan-btn:hover{background:var(--purple-deep);}

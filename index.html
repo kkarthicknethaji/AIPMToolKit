@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>AI PM Toolkit</title>
+<title>Product Studio</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=DM+Serif+Display&display=swap" rel="stylesheet"/>
 <link href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css" rel="stylesheet"/>
 <link rel="icon" type="image/x-icon" href="./favicon.ico"/>
@@ -14,7 +14,6 @@
 <link rel="stylesheet" href="./styles/04-left-panel.css">
 <link rel="stylesheet" href="./styles/05-kpi-tree.css">
 <link rel="stylesheet" href="./styles/06-metrics-definition.css">
-<link rel="stylesheet" href="./styles/07-capability-drawer.css">
 <link rel="stylesheet" href="./styles/08-feature-canvas.css">
 <link rel="stylesheet" href="./styles/16-story-canvas-new.css">
 <link rel="stylesheet" href="./styles/19-prototype-canvas.css">
@@ -28,6 +27,10 @@
 <link rel="stylesheet" href="./styles/20-team-management.css">
 <link rel="stylesheet" href="./styles/17-home.css">
 <link rel="stylesheet" href="./styles/21-outcome-pulse.css">
+<link rel="stylesheet" href="./styles/22-guided-launch.css">
+<link rel="stylesheet" href="./styles/23-requirement-agent.css">
+<link rel="stylesheet" href="./styles/24-readiness-canvas.css">
+<link rel="stylesheet" href="./styles/25-voice-input.css">
 </head>
 <body>
 <!-- Boot gate overlay (Phase 1) — full-viewport, covers everything underneath.
@@ -42,9 +45,11 @@
 
 <div class="hdr">
   <div class="hdr-l">
-    <span class="logo-txt" id="logo-txt"></span>
-    <div class="hdr-sep" id="hdr-sep" style="display:none;"></div>
-    <span class="hdr-title">AI PM Toolkit</span>
+    <div class="hdr-brand-cluster" id="hdr-brand-cluster" onclick="switchTab('home')" title="Go to Home" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchTab('home');}">
+      <span class="logo-txt" id="logo-txt"></span>
+      <div class="hdr-sep" id="hdr-sep" style="display:none;"></div>
+      <span class="hdr-title">Product Studio</span>
+    </div>
     <span class="hdr-version" id="hdr-version"></span>
   </div>
   <div class="hdr-session-wrap" id="hdr-session-wrap">
@@ -77,6 +82,13 @@
         <button class="hdr-avatar-profile" id="hdr-switch-company-btn" onclick="hdrOpenSwitchCompany()" style="display:none;">
           <i class="ti ti-building" aria-hidden="true"></i> Switch Company
         </button>
+        <!-- AI Cost Control Tower — opens in a new tab so in-flight state in
+             this tab is never lost. Open to every active member regardless
+             of role (multi-app platform extension; was admin-only in v9.28),
+             so no default display:none / JS-toggled visibility here. -->
+        <button class="hdr-avatar-profile" id="hdr-cost-tower-btn" onclick="hdrOpenCostTower()">
+          <i class="ti ti-chart-histogram" aria-hidden="true"></i> AI Control Tower
+        </button>
         <!-- "Create a New Company" removed in v8.101, per an explicit product
              decision — the capability wasn't gone, it moved: an existing user
              wanting a second company now does it through the signup form
@@ -102,13 +114,27 @@
 <div class="app-shell" id="app-shell">
   <div class="out-hdr"><div class="tab-row">
     <button class="tab-btn active" id="tab-home" onclick="switchTab('home')"><i class="ti ti-home"></i> Home</button>
+    <button class="tab-btn" id="tab-gl" onclick="switchTab('gl')" style="display:none;"><i class="ti ti-message-2"></i> Guided Launch</button>
     <button class="tab-btn" id="tab-mm" onclick="switchTab('mm')" style="display:none;"><i class="ti ti-hierarchy-2"></i> Discovery Map</button>
     <button class="tab-btn" id="tab-mi" onclick="switchTab('mi')" style="display:none;"><i class="ti ti-world-search"></i> Market Intelligence</button>
+    <!-- Requirement Agent redesign (Discovery-First Entry Point) — tab-gl
+      above is the pre-existing Guided Launch pre-Discovery-Map intake chat
+      (a v9.16 commit briefly mislabeled it "Requirement Agent"; reverted).
+      This tab-ra is the real, functionally distinct, global, multi-
+      conversation release-requirements agent, and is the sole owner of the
+      "Requirement Agent" name going forward. It sits PRE-Capability-Canvas
+      (after Discovery Map and Market Intelligence, per Item 7's v9.27.02
+      tab-order fix) since it triggers from Discovery Map's "Define
+      Requirements" CTA and its own Finalize creates capabilities into
+      Capability Canvas, rather than being entered FROM Capability Canvas
+      as in the prior design. -->
+    <button class="tab-btn tab-gated" id="tab-ra" onclick="switchTab('ra')"><i class="ti ti-clipboard-text"></i> Requirement Agent<span class="tab-pending-dot" id="tab-ra-dot"></span></button>
     <button class="tab-btn" id="tab-cc" onclick="switchTab('cc')" style="display:none;"><i class="ti ti-layers-subtract"></i> Capability Canvas<span class="tab-pending-dot" id="tab-cc-dot"></span></button>
     <button class="tab-btn" id="tab-la" onclick="switchTab('la')" style="display:none;"><i class="ti ti-microscope"></i> Experiment Canvas</button>
     <button class="tab-btn" id="tab-fc" onclick="switchTab('fc')" style="display:none;"><i class="ti ti-writing"></i> Feature Canvas<span class="tab-pending-dot" id="tab-fc-dot"></span></button>
     <button class="tab-btn tab-gated" id="tab-sc" onclick="switchTab('sc')"><i class="ti ti-list-details"></i> Story Canvas<span class="tab-pending-dot" id="tab-sc-dot"></span></button>
-    <button class="tab-btn tab-gated" id="tab-pi" onclick="switchTab('pi')"><i class="ti ti-calendar-event"></i> PI Canvas<span class="tab-pending-dot" id="tab-pi-dot"></span></button>
+    <button class="tab-btn tab-gated" id="tab-pi" onclick="switchTab('pi')"><i class="ti ti-calendar-event"></i> Release Canvas<span class="tab-pending-dot" id="tab-pi-dot"></span></button>
+    <button class="tab-btn tab-gated" id="tab-arp" onclick="switchTab('arp')"><i class="ti ti-checklist"></i> Adoption Readiness<span class="tab-pending-dot" id="tab-arp-dot"></span></button>
     <button class="tab-btn" id="tab-op" onclick="switchTab('op')" style="display:none;"><i class="ti ti-activity"></i> Outcome Pulse</button>
     <div class="home-tab-lock" id="home-tab-lock"><i class="ti ti-lock" style="font-size:9px;" aria-hidden="true"></i><span>Tabs unlock after you launch a session</span></div>
   </div></div>
@@ -173,6 +199,15 @@
             placeholder="One stage per line e.g. Discover, Plan, Purchase..."></textarea>
           <span class="home-hint">Overrides AI-derived value chain stages</span>
         </div>
+        <div class="home-tog-row mi-gated" id="home-mi-row">
+          <div class="home-tog-lhs">
+            <div class="home-tog-label"><i class="ti ti-world-search" style="font-size:10px;" aria-hidden="true"></i> Market Intelligence</div>
+            <div class="home-tog-sub">Make your map market-aware from the start</div>
+          </div>
+          <label class="sp-toggle" style="flex-shrink:0;">
+            <input type="checkbox" id="home-mi-toggle"><div class="sp-track"></div><div class="sp-thumb"></div>
+          </label>
+        </div>
         <div class="home-fl">
           <div style="display:flex;align-items:center;justify-content:space-between;">
             <label style="margin:0;"><i class="ti ti-notes" style="font-size:10px;" aria-hidden="true"></i> Additional Context</label>
@@ -184,21 +219,12 @@
             <div class="home-ctx-counter"><span id="home-ctx-counter">0/2000</span></div>
           </div>
         </div>
-        <div class="home-tog-row mi-gated" id="home-mi-row">
-          <div class="home-tog-lhs">
-            <div class="home-tog-label"><i class="ti ti-world-search" style="font-size:10px;" aria-hidden="true"></i> Market Intelligence</div>
-            <div class="home-tog-sub">Make your map market-aware from the start</div>
-          </div>
-          <label class="sp-toggle" style="flex-shrink:0;">
-            <input type="checkbox" id="home-mi-toggle"><div class="sp-track"></div><div class="sp-thumb"></div>
-          </label>
-        </div>
         <!-- Error/status message — margin-top:auto pins it above the gen-wrap divider -->
         <div class="home-launch-error" id="home-launch-error" style="display:none;"></div>
         </div>
       </div>
       <div class="home-gen-wrap">
-        <button class="home-gen-btn" id="home-gen-btn" onclick="homeLaunch()">
+        <button class="home-gen-btn" id="home-launch-btn" onclick="homeLaunchUnified()">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
           Launch Session
         </button>
@@ -281,13 +307,13 @@
         <label>Custom Value Chain</label>
         <textarea id="f-custom-vc" class="f-textarea" placeholder="Paste your client's process framework stages here, one per line, with optional 1-line descriptions. e.g.&#10;Discover — customer awareness and research&#10;Plan — meal and order planning&#10;Purchase — checkout and payment&#10;Fulfill — picking, packing, delivery&#10;Return — post-purchase service" maxlength="2000" rows="5"></textarea>
         <span class="ctx-counter" id="f-vc-counter">0/2000</span>
-        <span class="vc-hint">When populated, the KPI tree will use these exact stages instead of deriving its own value chain.</span>
+        <span class="vc-hint">When populated, the Discovery Map will use these exact stages instead of deriving its own value chain.</span>
       </div>
       <div class="fl mi-gated" id="mi-kpi-toggle-row" style="padding:0;">
         <div class="mi-kpi-toggle-row">
           <div>
             <div class="mi-toggle-label"><i class="ti ti-world-search" style="font-size:11px;"></i> Include Market Intelligence</div>
-            <div class="mi-toggle-sub">Make your KPI tree market-aware from the start</div>
+            <div class="mi-toggle-sub">Make your Discovery Map market-aware from the start</div>
           </div>
           <label class="sp-toggle" style="flex-shrink:0;">
             <input type="checkbox" id="tog-mi-kpi" /><div class="sp-track"></div><div class="sp-thumb"></div>
@@ -297,7 +323,6 @@
       </div>
     </div>
         <div class="gen-wrap"><button class="gen-btn" id="gen-btn" onclick="generate()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>Generate Discovery Map</button></div>
-        <div class="gen-wrap" style="margin-top:0;padding-top:0;"><button class="gen-btn-secondary" onclick="ccActivatePIFirst();revealAndSwitchTab('cc')"><i class="ti ti-clipboard-list" style="font-size:13px;" aria-hidden="true"></i> I already have a capability plan</button></div>
   </div>
 
   <div class="right">
@@ -390,28 +415,19 @@
                       <label class="fc-filter-row"><input type="checkbox" id="fc-filter-not-generated" onchange="fcSetStoriesFilter('not-generated')"> Without stories</label>
                       <div style="height:0.5px;background:var(--divider);margin:4px 0;"></div>
                       <div style="padding:4px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Origin</div>
-                      <label class="fc-filter-row"><input type="checkbox" id="fc-filter-origin-kpi" onchange="fcSetOriginFilter('origin-kpi')"> <i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> KPI tree</label>
+                      <label class="fc-filter-row"><input type="checkbox" id="fc-filter-origin-kpi" onchange="fcSetOriginFilter('origin-kpi')"> <i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> Discovery Map</label>
                       <label class="fc-filter-row"><input type="checkbox" id="fc-filter-origin-doc" onchange="fcSetOriginFilter('origin-doc')"> <i class="ti ti-file-text" style="font-size:11px;color:var(--orange);" aria-hidden="true"></i> Session document</label>
                       <label class="fc-filter-row"><input type="checkbox" id="fc-filter-origin-custom" onchange="fcSetOriginFilter('origin-custom')"> <i class="ti ti-clipboard-list" style="font-size:11px;color:var(--green);" aria-hidden="true"></i> Custom plan</label>
                       <label class="fc-filter-row"><input type="checkbox" id="fc-filter-origin-mi" onchange="fcSetOriginFilter('origin-mi')"> <i class="ti ti-world-search" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Market intelligence</label>
                       <label class="fc-filter-row"><input type="checkbox" id="fc-filter-origin-diag" onchange="fcSetOriginFilter('origin-diag')"> <i class="ti ti-microscope" style="font-size:11px;color:var(--amber);" aria-hidden="true"></i> Diagnostics</label>
+                      <div id="fc-filter-origin-ra-slot"></div>
                       <div style="border-top:1px solid var(--divider);margin:4px 0;"></div>
                       <div style="padding:4px 12px 8px;"><button onclick="fcClearFilter()" style="font-size:10px;color:var(--purple);background:none;border:none;cursor:pointer;font-family:var(--font);padding:0;">Clear all filters</button></div>
                     </div>
                   </div>
-                  <!-- Export -->
-                  <div class="sc-export-wrap" id="sc-export-wrap-toolbar">
-                    <button class="export-cta-btn" id="sc-export-btn" onclick="scExportAll()" disabled>
-                      <i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export
-                    </button>
-                  </div>
-                  <!-- Add Feature — primary, rightmost (dropdown: single / upload, v7.84) -->
-                  <div class="cc-addcap-wrap" id="sc-add-feat-wrap" style="position:relative;">
-                    <button class="cc-tb-btn-add" onclick="scToggleAddFeatDrop(event)"><i class="ti ti-plus" style="font-size:11px;" aria-hidden="true"></i> Add Feature <i class="ti ti-chevron-down" style="font-size:10px;" aria-hidden="true"></i></button>
-                    <div class="cc-addcap-drop" id="sc-addfeat-drop">
-                      <div class="cc-addcap-opt" onclick="scCloseAddFeatDrop();scShowAddFeatureModal()"><i class="ti ti-pencil" aria-hidden="true"></i> Single Feature</div>
-                      <div class="cc-addcap-opt" onclick="scCloseAddFeatDrop();scShowUploadFeatModal()"><i class="ti ti-upload" aria-hidden="true"></i> Upload from File</div>
-                    </div>
+                  <!-- Actions kebab - consolidates Add Feature + Export (v9.20) -->
+                  <div class="cc-addcap-wrap" id="sc-tb-kebab-wrap" style="position:relative;">
+                    <button class="tm-dots" id="sc-tb-kebab-btn" aria-label="Feature Canvas actions" aria-haspopup="true" aria-expanded="false" onclick="event.stopPropagation();scToggleTbKebabMenu(this)"><i class="ti ti-dots-vertical" aria-hidden="true"></i></button>
                   </div>
                 </div>
               </div>
@@ -423,14 +439,14 @@
                 <div class="sc-legend-item"><div class="sc-legend-bar lb-sel"></div> Selected for gen</div>
                 <div class="sc-legend-sep"></div>
                 <span class="sc-legend-lbl" style="margin-left:4px;">Origin</span>
-                <div class="sc-legend-item"><i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> KPI tree</div>
+                <div class="sc-legend-item"><i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> Discovery Map</div>
                 <div class="sc-legend-item"><i class="ti ti-file-text" style="font-size:11px;color:var(--orange);" aria-hidden="true"></i> Session doc</div>
                 <div class="sc-legend-item"><i class="ti ti-clipboard-list" style="font-size:11px;color:var(--green);" aria-hidden="true"></i> Custom plan</div>
                 <div class="sc-legend-item"><i class="ti ti-world-search" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Market intel</div>
                 <div class="sc-legend-item"><i class="ti ti-microscope" style="font-size:11px;color:var(--amber);" aria-hidden="true"></i> Diagnostics</div>
               </div>
               </div>
-              <div id="sc-cards-scroll" style="flex:1;overflow-y:auto;padding:0 22px 16px;">
+              <div id="sc-cards-scroll" style="flex:1;overflow-y:auto;overflow-x:hidden;padding:0 22px 16px;">
                 <div id="sc-cards-container"></div>
               </div>
             </div>
@@ -481,7 +497,10 @@
               <div class="sc-refine-lbl">Refine Stories</div>
               <div class="sc-refine-row">
                 <textarea class="sc-refine-txt" id="sc-refine-txt" placeholder="e.g. Focus on admin persona, add more edge cases, make ACs more technical..." rows="2"></textarea>
-                <button class="sc-refine-send" id="sc-refine-btn" onclick="scRefineStories()" title="Refine &amp; Regenerate"><i class="ti ti-refresh" style="font-size:11px;" aria-hidden="true"></i></button>
+                <div class="sc-refine-btn-group">
+                  <span id="sc-refine-voice-slot"></span>
+                  <button class="sc-refine-send" id="sc-refine-btn" onclick="scRefineStories()" title="Refine &amp; Regenerate"><i class="ti ti-refresh" style="font-size:11px;" aria-hidden="true"></i></button>
+                </div>
               </div>
             </div>
             <div class="sc-panel-footer-split">
@@ -507,42 +526,21 @@
       <div id="op-main" style="display:flex;flex-direction:column;flex:1;overflow:hidden;height:100%;"></div>
       <div class="op-lib-panel" id="op-lib-panel"></div>
     </div>
+    <!-- Guided Launch Tab -->
+    <div class="gl-tab" id="gl-tab"></div>
+    <!-- Requirement Agent Tab (v9.16) -->
+    <div class="ra-tab" id="ra-tab"></div>
+    <!-- Adoption Readiness Tab (v9.22) — real top-nav tab (id 'arp'), same
+         .arp-tab/.on toggle convention every other tab content container
+         uses (switchTab() in api.js). Entry point is rcOnTabEnter() in
+         readiness-canvas.js, called from switchTab('arp'). Adoption
+         Readiness is still only ever CREATED via Release Canvas's kebab
+         menu (piOpenReadinessPlan() in pi-planning.js) — only VIEWING
+         moved from a full-frame drawer overlay into this tab. -->
+    <div class="arp-tab" id="rc-canvas"></div>
   </div>
 </div>
 </div><!-- end app-shell -->
-
-<div class="cap-overlay" id="cap-overlay" onclick="closeCapDrawer()"></div>
-<div class="cap-drawer" id="cap-drawer">
-  <div class="cap-drawer-hdr">
-    <div class="cap-drawer-tag">Capabilities &amp; Features</div>
-    <div class="cap-drawer-metric" id="cap-metric-name">—</div>
-    <div class="cap-drawer-stage" id="cap-stage-name"></div>
-    <button class="cap-close" onclick="closeCapDrawer()">
-      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-    </button>
-  </div>
-  <div class="cap-drawer-body">
-    <div class="cap-loading" id="cap-loading">
-      <div class="cap-spin"></div>
-      <div class="cap-load-txt" id="cap-load-txt">Researching capabilities...</div>
-      <div class="cap-load-sub" id="cap-load-sub">This might take a moment...</div>
-      <div class="cap-load-steps" id="cap-load-steps"></div>
-    </div>
-    <div id="cap-content"></div>
-  </div>
-  <div class="cap-refine-wrap">
-    <div class="cap-refine-lbl">Suggest differently</div>
-    <div class="cap-refine-row">
-      <textarea class="cap-refine-txt" id="cap-refine-txt" placeholder="e.g. We already have invite flow. Focus on analytics..." rows="2" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();refineCapabilities();}"></textarea>
-      <button class="cap-refine-btn" id="cap-refine-btn" onclick="refineCapabilities()">&#8635; Refine</button>
-    </div>
-  </div>
-  <div class="cap-drawer-footer" id="cap-drawer-footer" style="display:none;">
-    <div class="cap-canvas-count"><strong id="cap-canvas-count-num">0</strong> feature(s) on canvas</div>
-    <button class="cap-go-canvas" onclick="closeCapDrawer();switchTab('fc');"><i class="ti ti-writing" style="font-size:11px;"></i> View Feature Canvas</button>
-  </div>
-</div>
-
 
 <!-- Settings page — full-page swap, replaces app-shell when open -->
 <div id="settings-page" style="display:none;flex-direction:column;width:100%;height:calc(100vh - 0px);min-height:0;overflow:hidden;"></div>
@@ -591,6 +589,7 @@
 <script src="./scripts/state.js"></script>
 <script src="./scripts/config.js"></script>
 <script src="./scripts/utils.js"></script>
+<script src="./scripts/voice-input.js"></script>
 <script src="./scripts/pi-bucket.js"></script>
 <script src="./scripts/prompts.js"></script>
 <script src="./scripts/settings.js"></script>
@@ -599,7 +598,6 @@
 <script src="./scripts/left-panel.js"></script>
 <script src="./scripts/kpi-tree.js"></script>
 <script src="./scripts/metrics-definition.js"></script>
-<script src="./scripts/capability-drawer.js"></script>
 <script src="./scripts/feature-canvas.js"></script>
 <script src="./scripts/story-canvas-new.js"></script>
 <script src="./scripts/prototype-canvas.js"></script>
@@ -614,8 +612,11 @@
   <script src="./scripts/pi-planning.js"></script>
   <script src="./scripts/export-pi-docx.js"></script>
   <script src="./scripts/outcome-pulse.js"></script>
+  <script src="./scripts/readiness-canvas.js"></script>
 <script src="./scripts/session-store.js"></script>
 <script src="./scripts/live-sync.js"></script>
+<script src="./scripts/guided-launch.js"></script>
+<script src="./scripts/requirement-agent.js"></script>
 <script src="./scripts/home.js"></script>
 <script src="./scripts/api.js"></script>
 <script src="./scripts/demo-data.js"></script>

@@ -247,45 +247,116 @@ async function withGenerationLock(fn){
 }
 
 
-// ── Per-caller default model table ──
-// Used only when appSettings.model === 'optimized' (the new default — see
-// settings-page.js _spModels). Any other appSettings.model value is a
-// deliberate user override and wins outright over everything below, via
-// resolveModel()'s precedence chain. Keys must exactly match the `caller`
-// tag passed as callAPI's last argument. Sourced from the v8.87 AI Model
-// Defaults spreadsheet — keep these two in sync if either changes.
-const CALLER_MODEL_DEFAULTS = {
-  'dm-generate': 'claude-sonnet-4-6',
-  'mi-suggest': 'claude-haiku-4-5',
-  'mi-generate': 'claude-haiku-4-5',
-  'mi-docx-gen': 'claude-haiku-4-5',
-  'cc-gen-one': 'claude-sonnet-4-6',
-  'cc-gen-all': 'claude-haiku-4-5',
-  'cc-gen-features': 'claude-sonnet-4-6',
-  'cc-regen-metric': 'claude-sonnet-4-6',
-  'cc-refine-metric': 'claude-sonnet-4-6',
-  'cc-gen-features-pi': 'claude-sonnet-4-6',
-  'cc-dd-batch': 'claude-haiku-4-5',
-  'cc-dd-single': 'claude-haiku-4-5',
-  'cc-gen-features-cap': 'claude-sonnet-4-6',
-  'drawer-gen-features': 'claude-sonnet-4-6',
-  'diagnostic-leak': 'claude-sonnet-4-6',
-  'fc-gen-stories': 'claude-sonnet-4-6',
-  'md-dd-batch': 'claude-haiku-4-5',
-  'pi-generate': 'claude-sonnet-4-6',
-  'prototype-wireframe': 'claude-haiku-4-5',
-  'prototype-brief': 'claude-sonnet-4-6',
-  'doc-summary': 'claude-haiku-4-5',
-  'ai-recommendations': 'claude-haiku-4-5',
-  // v9.10.03: was silently falling through to _MODEL_FALLBACK
-  // ('claude-sonnet-4-6') by omission, not deliberate choice — this call
-  // (Add Feature's on-demand single-hypothesis generation) is a lighter,
-  // single-item task closer in profile to cc-dd-single/mi-suggest than
-  // to the bulk multi-feature generation callers, so registered here at
-  // the Haiku tier rather than Sonnet.
-  'sc-add-feat-hyp-gen': 'claude-haiku-4-5'
+// ── Per-caller tiering table (v9.14 — multi-provider) ──
+// Used only when appSettings.model === 'optimized' (see scripts/config.js's
+// _spModelsByProvider). Any other appSettings.model value is a deliberate
+// user override and wins outright over everything below, via
+// resolveModelDecision()'s precedence chain.
+//
+// Two-layer, replacing the old flat CALLER_MODEL_DEFAULTS map: a provider-
+// independent tier classification per caller (unchanged from the implicit
+// Haiku/Sonnet split this table encoded before — just made explicit and
+// named), plus a tier-to-model map per provider. Sourced from the v8.87 AI
+// Model Defaults spreadsheet — keep in sync if either changes.
+const CALLER_TIERS = {
+  'dm-generate': 'general',
+  'mi-suggest': 'lightweight',
+  'mi-generate': 'lightweight',
+  'mi-docx-gen': 'lightweight',
+  'cc-gen-one': 'general',
+  'cc-gen-all': 'lightweight',
+  'cc-gen-features': 'general',
+  'cc-regen-metric': 'general',
+  'cc-refine-metric': 'general',
+  'cc-gen-features-pi': 'general',
+  'cc-dd-batch': 'lightweight',
+  'cc-dd-single': 'lightweight',
+  'cc-gen-features-cap': 'general',
+  'drawer-gen-features': 'general',
+  'diagnostic-leak': 'general',
+  'fc-gen-stories': 'general',
+  'md-dd-batch': 'lightweight',
+  'pi-generate': 'general',
+  'prototype-wireframe': 'lightweight',
+  'prototype-brief': 'general',
+  'doc-summary': 'lightweight',
+  'ai-recommendations': 'lightweight',
+  // v9.10.03: was silently falling through to the fallback tier by
+  // omission, not deliberate choice — this call (Add Feature's on-demand
+  // single-hypothesis generation) is a lighter, single-item task closer in
+  // profile to cc-dd-single/mi-suggest than to the bulk multi-feature
+  // generation callers, so registered here at the lightweight tier.
+  'sc-add-feat-hyp-gen': 'lightweight',
+  // v9.12.05 fix: was hardcoded to a specific Haiku model string directly
+  // at the call site (outcome-pulse.js), completely bypassing this table
+  // and the Optimized/user-choice precedence chain in resolveModel() below
+  // — confirmed a real gap, not a deliberate choice. Optimized now
+  // correctly resolves to the general tier for this caller; an explicit
+  // user model choice in Settings is also now correctly respected here,
+  // same as every other caller in this table.
+  'outcome-pulse-suggest': 'general',
+  // v9.15: Guided Launch chat turns (opening summary, revisions, upload
+  // summarisation) and its final MD synthesis — general tier so Optimized
+  // resolves to each provider's Sonnet-equivalent, matching the product
+  // decision to use the standard resolution chain rather than a hardcoded
+  // model string (see guided-launch.js).
+  'guided-launch': 'general',
+  // v9.16: Requirement Agent (the real, global, multi-conversation
+  // post-Capability-Canvas agent — see requirement-agent.js) — same general
+  // tier/resolution-chain reasoning as guided-launch above. Distinct caller
+  // key from 'guided-launch' on purpose: these are two separate features.
+  'requirement-agent': 'general',
+  // v9.23: Adoption Readiness's optional "Regenerate with AI" enhancements
+  // (readiness-canvas.js) — general tier, same reasoning-over-structured-
+  // JSON profile as fc-gen-stories. The deterministic/templated drafts
+  // remain the default and the fallback on any AI-call failure; these
+  // callers only fire when the user explicitly requests enrichment.
+  'arp-change-overview': 'general',
+  'arp-impact-groups': 'general',
+  'arp-readiness-actions': 'general',
+  'arp-launch-narrative': 'general'
 };
-const _MODEL_FALLBACK = 'claude-sonnet-4-6'; // used if caller tag is missing from the table above — should never happen, but never silently fail to a non-existent model
+
+// Tier -> model, per provider. This is the ONLY place a literal model ID
+// for "optimized" mode lives. No caller currently maps to 'premium' — that
+// tier exists for manual user pinning only (e.g. user explicitly selects
+// Opus in Settings). Preserved as-is; not a behavior change.
+//
+// OpenAI model IDs confirmed 2026-07-25 via direct human screenshot of
+// developers.openai.com/api/docs/models — see scripts/config.js's
+// _spModelsByProvider for the full residual-uncertainty note (GPT-5.6 family
+// reportedly limited-preview per press, not yet confirmed callable by this
+// org's account due to a $0 billing balance blocker).
+const TIER_MODEL_BY_PROVIDER = {
+  anthropic: {
+    lightweight: 'claude-haiku-4-5',
+    general:     'claude-sonnet-4-6',
+    premium:     'claude-opus-4-8'
+  },
+  openai: {
+    lightweight: 'gpt-5.6-luna',
+    general:     'gpt-5.6-terra',
+    premium:     'gpt-5.6-sol'
+  },
+  // Gemini model IDs confirmed via direct raw-documentation paste (not
+  // search-tool output) — see scripts/config.js's _spModelsByProvider
+  // comment for the source and the confirmed-no-premium-tier finding.
+  // premium: null is intentional, not a placeholder — resolveModelDecision()
+  // already handles a null tier-lookup result by falling through to
+  // _MODEL_FALLBACK_BY_PROVIDER.gemini below, never silently sending
+  // null/undefined upstream (verified correct in the shipped v9.14.02 code).
+  gemini: {
+    lightweight: 'gemini-3.5-flash-lite',
+    general:     'gemini-3.6-flash',
+    premium:     null
+  }
+};
+
+const _MODEL_FALLBACK_BY_PROVIDER = {
+  anthropic: 'claude-sonnet-4-6',
+  openai:    'gpt-5.6-terra', // general tier, mirroring anthropic's fallback being its own general-tier model
+  gemini:    'gemini-3.6-flash' // general tier, same pattern
+};
 
 // ── Shared model resolver ──
 // Single source of truth for "which model should this call actually use."
@@ -299,20 +370,78 @@ const _MODEL_FALLBACK = 'claude-sonnet-4-6'; // used if caller tag is missing fr
 // future change to precedence only needs to happen in one place.
 // ── Multi-select model threshold ──
 // Used by CC's ccGenerateFeaturesForSelected and FC's scGenerateStories
-// batch path. Forces claude-haiku-4-5 for 4+ items ONLY when the user is
-// still on the 'optimized' default — if they've explicitly chosen a model
-// in Settings, that choice always wins, with no exception for batch size.
+// batch path. Forces the active provider's lightweight tier for 4+ items
+// ONLY when the user is still on the 'optimized' default — if they've
+// explicitly chosen a model in Settings, that choice always wins, with no
+// exception for batch size. v9.14: no longer hardcodes claude-haiku-4-5 —
+// forces whichever provider is active's lightweight tier instead.
 function resolveThresholdModel(itemCount){
   const settingsVal=(typeof appSettings!=='undefined')?appSettings.model:undefined;
   if(settingsVal && settingsVal!=='optimized') return null; // user has an explicit choice — don't touch it
-  return itemCount>=4 ? 'claude-haiku-4-5' : null;
+  if(itemCount<4) return null;
+  const provider=(typeof appSettings!=='undefined'&&appSettings.provider)?appSettings.provider:'anthropic';
+  const tierMap=TIER_MODEL_BY_PROVIDER[provider]||TIER_MODEL_BY_PROVIDER.anthropic;
+  return tierMap.lightweight || _MODEL_FALLBACK_BY_PROVIDER[provider] || _MODEL_FALLBACK_BY_PROVIDER.anthropic;
+}
+
+// ── v9.13: AI usage-tracking model-selection provenance ──
+// Same precedence as resolveModel() below, but also returns WHY a model was
+// chosen, not just which one — needed so mt_ai_usage_events can distinguish
+// "Optimized picked this" from "user explicitly chose this" from "batch-size
+// logic forced this," which a bare model string can't do on its own.
+// resolveModel() becomes a thin wrapper so none of its ~15+ existing call
+// sites need to change.
+//
+// overrideSource: passed by the CALLER when modelOverride is non-null, so
+// this function doesn't have to guess why an override was supplied. If a
+// caller passes a modelOverride without a source, this correctly falls back
+// to 'explicit_override_unclassified' — an honest "don't know," not a
+// silent mislabel as 'batch_threshold_override'. Only feature-canvas.js's
+// confirmed resolveThresholdModel() call site currently supplies a source;
+// any other modelOverride-passing call site not yet audited will show up
+// as 'explicit_override_unclassified' in the data, a visible gap rather
+// than a wrong answer.
+// v9.14: provider-aware. Precedence chain is unchanged in shape:
+// 1. modelOverride wins outright (as before).
+// 2. User's explicit Settings pin (appSettings.model !== 'optimized') wins (as before).
+// 3. CALLER_TIERS[caller] -> TIER_MODEL_BY_PROVIDER[provider][tier] — new
+//    two-step lookup replacing the old single-step CALLER_MODEL_DEFAULTS[caller].
+// 4. _MODEL_FALLBACK_BY_PROVIDER[provider] — provider-aware fallback,
+//    replacing the old single hardcoded _MODEL_FALLBACK.
+// Return shape gains `provider` so downstream usage-tracking can log which
+// provider was actually used without re-deriving it.
+function resolveModelDecision(modelOverride, caller, overrideSource){
+  const settingsVal=(typeof appSettings!=='undefined')?appSettings.model:undefined;
+  const settingsMode=(settingsVal && settingsVal!=='optimized')?'fixed_model':'optimized';
+  const provider=(typeof appSettings!=='undefined'&&appSettings.provider)?appSettings.provider:'anthropic';
+
+  if(modelOverride){
+    return {
+      model: modelOverride,
+      provider,
+      settingsMode,
+      settingsModel: settingsMode==='fixed_model'?settingsVal:null,
+      selectionRule: overrideSource || 'explicit_override_unclassified'
+    };
+  }
+  if(settingsMode==='fixed_model'){
+    return { model: settingsVal, provider, settingsMode, settingsModel: settingsVal, selectionRule: 'user_selected_model' };
+  }
+  const tier=CALLER_TIERS[caller];
+  const tierMap=TIER_MODEL_BY_PROVIDER[provider]||TIER_MODEL_BY_PROVIDER.anthropic;
+  const tierModel=tier?tierMap[tier]:null;
+  if(tierModel){
+    return { model: tierModel, provider, settingsMode, settingsModel: null, selectionRule: 'optimized_caller_default' };
+  }
+  // Covers both "caller has no tier assignment" and "tier resolved to null"
+  // (e.g. a provider with no premium tier — see TIER_MODEL_BY_PROVIDER)
+  // — never silently return null/undefined as a model string to send upstream.
+  const fallback=_MODEL_FALLBACK_BY_PROVIDER[provider]||_MODEL_FALLBACK_BY_PROVIDER.anthropic;
+  return { model: fallback, provider, settingsMode, settingsModel: null, selectionRule: 'optimized_fallback_default' };
 }
 
 function resolveModel(modelOverride, caller){
-  if(modelOverride) return modelOverride;
-  const settingsVal=(typeof appSettings!=='undefined')?appSettings.model:undefined;
-  if(settingsVal && settingsVal!=='optimized') return settingsVal;
-  return CALLER_MODEL_DEFAULTS[caller] || _MODEL_FALLBACK;
+  return resolveModelDecision(modelOverride, caller, null).model;
 }
 
 // ── Shared tab-pending indicator ──
@@ -330,6 +459,10 @@ function clearTabPending(tabId){
 
 function switchTab(t){
   if(blockIfGenerating(()=>switchTab(t)))return;
+  // v9.15.03, Item 1 — checked BEFORE curTab is reassigned below, since the
+  // guard itself needs to compare curTab (the tab being left) against t
+  // (the tab being entered).
+  if(typeof blockIfLeavingGuidedLaunch==='function'&&blockIfLeavingGuidedLaunch(t))return;
   const prev=curTab;
   curTab=t;
   // Phase 3a (v8.126): Home poll only runs while Home is actually visible —
@@ -351,6 +484,21 @@ function switchTab(t){
     _lsFlushManualEditOnTabLeave('sc');
     _lsFlushManualEditOnTabLeave('pc');
   }
+  // v9.24 — voice dictation must not keep listening once the PM navigates
+  // away from the tab that's actually dictating. Originally scoped to
+  // prev==='ra' only, back when Requirement Agent was the sole surface with
+  // voice input. v9.25 (confirmed via live testing) — generalized to ANY
+  // tab switch: Discovery Map, Capability Canvas, Feature Canvas, Outcome
+  // Pulse, and Prototype Canvas all attached afterward, and NONE of their
+  // own cleanup points (rebuild guards, close handlers, stop-on-send) fire
+  // on a plain tab switch with no other action taken first — dictation kept
+  // running untouched. voiceStopActive() is a safe no-op regardless of
+  // which surface (if any) is actually active, so one unconditional call
+  // here covers every current surface and every future one, with no
+  // per-surface prev==='xx' condition to remember to add each time.
+  if(prev!==t){
+    voiceStopActive('abort');
+  }
   // Fix 1 (v8.39): update lastTab on user-initiated tab switches, debounced 300ms
   if(typeof _ssRestoring!=='undefined'&&!_ssRestoring&&t!=='home'){
     if(typeof _ssLastTabTimer!=='undefined')clearTimeout(_ssLastTabTimer);
@@ -369,7 +517,7 @@ function switchTab(t){
   // Close DD panel on every tab switch
   if(typeof ccCloseDDPanel==='function')ccCloseDDPanel();
   // Update all tab buttons — includes home, fc (Feature Canvas) and sc (Story Canvas)
-  ['mm','cc','pi','mi','la','fc','sc','op','home'].forEach(id=>{
+  ['mm','cc','pi','arp','mi','la','fc','sc','op','gl','ra','home'].forEach(id=>{
     const el=document.getElementById('tab-'+id);
     if(el)el.classList.toggle('active',t===id);
   });
@@ -380,7 +528,10 @@ function switchTab(t){
   const miTab=document.getElementById('mi-tab');
   const ccTab=document.getElementById('cc-tab');
   const piTab=document.getElementById('pi-tab');
+  const arpTab=document.getElementById('rc-canvas');
   const opTab=document.getElementById('op-tab');
+  const glTab=document.getElementById('gl-tab');
+  const raTab=document.getElementById('ra-tab');
   const homeTab=document.getElementById('home-tab');
   const lp=document.getElementById('left-panel');
 
@@ -393,7 +544,10 @@ function switchTab(t){
   if(miTab)miTab.classList.toggle('on',t==='mi');
   if(ccTab)ccTab.classList.toggle('on',t==='cc');
   if(piTab)piTab.classList.toggle('on',t==='pi');
+  if(arpTab)arpTab.classList.toggle('on',t==='arp');
   if(opTab)opTab.classList.toggle('on',t==='op');
+  if(glTab)glTab.classList.toggle('on',t==='gl');
+  if(raTab)raTab.classList.toggle('on',t==='ra');
 
   // Left panel: hidden on all tabs except mm post-launch (handled in mm case above)
   // For all non-mm tabs, always hide old left panel — Home has its own, others don't use it
@@ -428,7 +582,7 @@ function switchTab(t){
       if(el) el.style.display='none';
     });
     // SC and PI use .revealed class — hide them too when on Home
-    ['tab-sc','tab-pi'].forEach(function(id){
+    ['tab-sc','tab-pi','tab-ra','tab-arp'].forEach(function(id){
       const el=document.getElementById(id);
       if(el&&el.classList.contains('revealed')){
         el.setAttribute('data-home-hidden','1');
@@ -446,7 +600,7 @@ function switchTab(t){
       }
     });
     // Restore SC and PI revealed state if they were hidden on Home entry
-    ['tab-sc','tab-pi'].forEach(function(id){
+    ['tab-sc','tab-pi','tab-ra','tab-arp'].forEach(function(id){
       const el=document.getElementById(id);
       if(el&&el.getAttribute('data-home-hidden')==='1'){
         el.classList.add('revealed');
@@ -503,6 +657,10 @@ function switchTab(t){
     const bar=document.getElementById('diag-action-bar');
     if(bar)bar.style.display='none';
     if(typeof piOnTabEnter==='function')piOnTabEnter();
+  }else if(t==='arp'){
+    const bar=document.getElementById('diag-action-bar');
+    if(bar)bar.style.display='none';
+    if(typeof rcOnTabEnter==='function')rcOnTabEnter();
   }else if(t==='mi'){
     const bar=document.getElementById('diag-action-bar');
     if(bar)bar.style.display='none';
@@ -532,7 +690,9 @@ function switchTab(t){
     const scTabReveal=document.getElementById('tab-sc');
     if(scTabReveal&&typeof scCanvas!=='undefined'&&scCanvas.some(f=>f.stories&&f.stories.length>0))scTabReveal.classList.add('revealed');
     const piTabReveal=document.getElementById('tab-pi');
-    if(piTabReveal&&typeof featPI!=='undefined'&&featPI&&typeof piPlan!=='undefined'&&piPlan)piTabReveal.classList.add('revealed');
+    if(piTabReveal&&typeof featPI!=='undefined'&&featPI&&typeof piPlans!=='undefined'&&Array.isArray(piPlans)&&piPlans.length>0)piTabReveal.classList.add('revealed');
+    const arpTabReveal=document.getElementById('tab-arp');
+    if(arpTabReveal&&typeof piReadinessPlans!=='undefined'&&Array.isArray(piReadinessPlans)&&piReadinessPlans.length>0)arpTabReveal.classList.add('revealed');
   }
   // Story Canvas tab entry
   if(t==='sc'){
@@ -545,6 +705,25 @@ function switchTab(t){
     const bar=document.getElementById('diag-action-bar');
     if(bar)bar.style.display='none';
     if(typeof opRender==='function')opRender();
+  }
+  // Guided Launch tab entry (Item 19) — matches the same per-branch hide
+  // already applied for every other non-mm tab above; gl's own render
+  // (glRenderShell/glRenderChatHistory/glRenderMdBody) is triggered
+  // directly by guided-launch.js's glCreateAndOpen() or, on resume, by
+  // session-store.js's sessionStoreRestore() -> glApplyRestoredSnapshot(),
+  // not from here.
+  if(t==='gl'){
+    const bar=document.getElementById('diag-action-bar');
+    if(bar)bar.style.display='none';
+  }
+  // Requirement Agent tab entry (v9.16) — ra's own render (raRenderShell/
+  // raRenderConversationList/raRenderChatHistory/raRenderLiveDraft) is
+  // triggered directly by requirement-agent.js's raOnTabEnter(), same
+  // per-branch hide-diag-bar convention every other non-mm tab above uses.
+  if(t==='ra'){
+    const bar=document.getElementById('diag-action-bar');
+    if(bar)bar.style.display='none';
+    if(typeof raOnTabEnter==='function')raOnTabEnter();
   }
   // Close export dropdowns when switching tabs
   const expDrop=document.getElementById('sc-export-drop');
@@ -652,7 +831,29 @@ function hideDDLoad(){
   document.getElementById('dd-ls').classList.remove('on');
 }
 
-async function callAPI(sys,usr,maxTok,signal,modelOverride,caller){
+// AI Trace Layer — shared fallback for both callAPI() and callAPIStream()
+// below, used only when crypto.randomUUID is unavailable. Replaces the old
+// Date.now()+Math.random() fallback (not a valid UUID) — mt_ai_usage_events.
+// client_call_id is uuid, NOT NULL (confirmed live against both pgt-dev and
+// pgt-prod), so a non-UUID value here would fail that column's type
+// constraint on insert. Minimal RFC-4122-shaped UUID v4 generator, no
+// external dependency.
+function _generateFallbackUuid(){
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,function(c){
+    var r=Math.random()*16|0, v=c==='x'?r:(r&0x3|0x8);
+    return v.toString(16);
+  });
+}
+
+// extraFields (v9.15, optional 8th param): {session_id, product_id, session_type}.
+// Guided Launch passes session_type:'ChatCanvas' so mt_ai_usage_events can
+// distinguish its chat-turn costs from Discovery Map generation costs, even
+// though both now share the same real mt_sessions row (v9.15.02 unified
+// Guided Launch onto mt_sessions — it no longer has a separate table, so
+// session_id/product_id here are just its own already-correct values,
+// passed explicitly rather than relying on the defaults below). Every other
+// caller passes undefined, so those defaults are unchanged for them.
+async function callAPI(sys,usr,maxTok,signal,modelOverride,caller,modelOverrideSource,extraFields){
   const key=getKey();
 
   // ── Proxy URL ─────────────────────────────────────────────────────────────────
@@ -661,7 +862,11 @@ async function callAPI(sys,usr,maxTok,signal,modelOverride,caller){
   // Prod env.js → product-diagnostics-proxy.onrender.com
   // Local dev falls back to localhost:3001 regardless of env.js value.
   // Note: onrender.com must be whitelisted on corporate networks for generation to work.
-  // AI Recommendations uses the Netlify function path (home.js) — works without whitelisting.
+  // AI Recommendations (home.js) also routes here, not through the Netlify
+  // function — rerouted in v9.01 after the Netlify Function URL was found
+  // to be blocked by HCL's corporate gateway ("Suspicious" category, keyed
+  // on "anthropic" in the path); see home.js's own call site for the full
+  // history. This comment previously claimed the opposite and was stale.
   const host=window.location.hostname;
   const isLocal=host===''||host==='localhost'||host==='127.0.0.1';
   const LOCAL_PROXY_URL='http://localhost:3001/api/anthropic';
@@ -690,13 +895,53 @@ async function callAPI(sys,usr,maxTok,signal,modelOverride,caller){
   if(key && key.trim()) headers['Authorization'] = 'Bearer ' + key.trim();
   if(authToken) headers['X-Auth-Token'] = authToken;
 
+  // v9.13: single decision call — used for both the actual model string sent
+  // to Anthropic AND the provenance fields recorded for usage tracking, so
+  // the two can never drift apart (e.g. sending model X but recording a
+  // different selectionRule than what actually produced X).
+  const _decision = resolveModelDecision(modelOverride, caller, modelOverrideSource);
+
+  // Stable per-call id, generated once client-side. Lets the future usage
+  // dashboard correlate a single logical call even if retried, without
+  // relying on server-generated ids alone. crypto.randomUUID() is available
+  // in all evergreen browsers this app targets; the fallback only matters
+  // for an environment lacking it entirely.
+  // A caller that needs this id back afterward (to invoke the Yield
+  // report-back endpoint, POST /api/usage-events/units-generated) may supply
+  // its own via extraFields.client_call_id — this function has no return-shape
+  // change to expose one otherwise (it returns a bare string). Every other
+  // caller omits this field and gets the same auto-generated id as before.
+  const _clientCallId=(extraFields&&extraFields.client_call_id)?extraFields.client_call_id:(typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():_generateFallbackUuid();
+
   const body = JSON.stringify({
-    model:resolveModel(modelOverride, caller),
+    model:_decision.model,
     max_tokens:maxTok,
     system:sys,
     messages:[{role:'user',content:usr}],
     _caller:caller||'',
-    company_id:(function(){ try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || ''; } catch(e) { return ''; } })()
+    company_id:(function(){ try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || ''; } catch(e) { return ''; } })(),
+    // v9.13: AI usage-tracking fields — read here, stripped by server.js
+    // before forwarding to Anthropic (never part of anthropicBody there).
+    product_id:(extraFields&&extraFields.product_id!=null)?extraFields.product_id:((typeof activeProfileId!=='undefined')?activeProfileId:null),
+    session_id:(extraFields&&extraFields.session_id!=null)?extraFields.session_id:((typeof _activeSessionId!=='undefined')?_activeSessionId:null),
+    session_type:(extraFields&&extraFields.session_type)?extraFields.session_type:null,
+    client_call_id:_clientCallId,
+    // AI Trace Layer — client_trace_id is the only trace-continuation key
+    // (Invariant 2); agent_name is required server-side whenever it's
+    // present. Every caller that doesn't supply these gets null for both,
+    // same as every other optional extraFields entry.
+    client_trace_id:(extraFields&&extraFields.client_trace_id!=null)?extraFields.client_trace_id:null,
+    agent_name:(extraFields&&extraFields.agent_name!=null)?extraFields.agent_name:null,
+    settings_mode:_decision.settingsMode,
+    settings_model:_decision.settingsModel,
+    selection_rule:_decision.selectionRule,
+    prompt_version:(typeof PROMPT_VERSIONS!=='undefined'&&PROMPT_VERSIONS[caller])?PROMPT_VERSIONS[caller]:null,
+    // v9.14: the client's believed provider — useful for diagnostics/logging
+    // only. The proxy does NOT trust this for dispatch, billing, or
+    // usage-attribution; it independently resolves the company's actual
+    // configured provider server-side and that value always wins (see
+    // proxy/server.js's requireActiveCompanyMember + provider resolution).
+    provider:_decision.provider
   });
 
   let r;
@@ -713,7 +958,117 @@ async function callAPI(sys,usr,maxTok,signal,modelOverride,caller){
   if(data.error){
     throw new Error(_pgtAnthropicErrorMessage(data.error));
   }
-  return data.content&&data.content[0]?data.content[0].text:'';
+  // v9.14: provider-neutral response envelope — the proxy's adapter layer
+  // (proxy/providerAdapters.js) normalizes every provider's response shape
+  // to {text, ...} before it reaches the client, so this line is the same
+  // regardless of which provider actually ran. Previously read
+  // data.content[0].text (Anthropic Messages API's raw shape directly).
+  return data.text||'';
+}
+
+// ── Streaming variant (v-next, Requirement Agent only, opt-in) ──
+// Sibling to callAPI() above, NOT a replacement — every other caller keeps
+// using callAPI() untouched. Same request-building (model resolution, auth
+// headers, body fields) but adds `stream:true` to the body, which is what
+// makes proxy/server.js route into _handleStreamingRequest() instead of its
+// default buffered path (see that file's comment on the opt-in gate).
+// Reads the proxy's own normalized SSE contract (`data: {"delta":"..."}`
+// chunks, ending in `data: {"done":true}` or `data: {"error":true,...}`) —
+// this is NOT the raw provider SSE format, that translation already happened
+// server-side per-adapter, so this function needs zero per-provider logic.
+// onDelta(text) fires once per chunk as it streams in, for live rendering;
+// the function resolves to the full concatenated text once `done` arrives,
+// matching callAPI()'s own return shape (a plain string) so callers can
+// treat the result identically once streaming finishes.
+async function callAPIStream(sys,usr,maxTok,signal,modelOverride,caller,modelOverrideSource,extraFields,onDelta){
+  const key=getKey();
+  const host=window.location.hostname;
+  const isLocal=host===''||host==='localhost'||host==='127.0.0.1';
+  const LOCAL_PROXY_URL='http://localhost:3001/api/anthropic';
+  const hostedProxyUrl=(typeof PROXY_URL!=='undefined'&&PROXY_URL)?PROXY_URL:'https://product-diagnostics-proxy.onrender.com/api/anthropic';
+
+  let authToken = '';
+  try {
+    if(typeof authGetFreshToken==='function'){
+      authToken = await authGetFreshToken();
+    }
+  } catch(e) {
+    console.warn('callAPIStream: could not retrieve session token', e);
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  if(key && key.trim()) headers['Authorization'] = 'Bearer ' + key.trim();
+  if(authToken) headers['X-Auth-Token'] = authToken;
+
+  const _decision = resolveModelDecision(modelOverride, caller, modelOverrideSource);
+  // AI Trace Layer build-gate #5 — this previously always generated its own
+  // id, ignoring any extraFields.client_call_id override the caller
+  // supplied, unlike callAPI()'s own check just above. Now matches that
+  // pattern exactly.
+  const _clientCallId=(extraFields&&extraFields.client_call_id)?extraFields.client_call_id:(typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():_generateFallbackUuid();
+
+  const body = JSON.stringify({
+    model:_decision.model,
+    max_tokens:maxTok,
+    system:sys,
+    messages:[{role:'user',content:usr}],
+    _caller:caller||'',
+    company_id:(function(){ try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || ''; } catch(e) { return ''; } })(),
+    product_id:(extraFields&&extraFields.product_id!=null)?extraFields.product_id:((typeof activeProfileId!=='undefined')?activeProfileId:null),
+    session_id:(extraFields&&extraFields.session_id!=null)?extraFields.session_id:((typeof _activeSessionId!=='undefined')?_activeSessionId:null),
+    session_type:(extraFields&&extraFields.session_type)?extraFields.session_type:null,
+    client_call_id:_clientCallId,
+    client_trace_id:(extraFields&&extraFields.client_trace_id!=null)?extraFields.client_trace_id:null,
+    agent_name:(extraFields&&extraFields.agent_name!=null)?extraFields.agent_name:null,
+    settings_mode:_decision.settingsMode,
+    settings_model:_decision.settingsModel,
+    selection_rule:_decision.selectionRule,
+    prompt_version:(typeof PROMPT_VERSIONS!=='undefined'&&PROMPT_VERSIONS[caller])?PROMPT_VERSIONS[caller]:null,
+    provider:_decision.provider,
+    stream:true
+  });
+
+  const url=isLocal?LOCAL_PROXY_URL:hostedProxyUrl;
+  const r=await fetch(url,{method:'POST',headers,body,signal});
+
+  // Non-streaming error response (e.g. auth/validation failure before the
+  // proxy ever switches to text/event-stream) — same shape callAPI() handles.
+  const contentType=(r.headers.get('content-type')||'');
+  if(contentType.indexOf('text/event-stream')===-1){
+    const data=await r.json().catch(function(){
+      throw new Error('Generation timed out or proxy unavailable. Please try again.');
+    });
+    if(data.error) throw new Error(_pgtAnthropicErrorMessage(data.error));
+    return data.text||'';
+  }
+
+  const reader=r.body.getReader();
+  const decoder=new TextDecoder();
+  let buffer='',fullText='';
+  while(true){
+    const {done,value}=await reader.read();
+    if(done)break;
+    buffer+=decoder.decode(value,{stream:true});
+    const events=buffer.split('\n\n');
+    buffer=events.pop();
+    for(const evt of events){
+      const line=evt.split('\n').find(function(l){return l.indexOf('data:')===0;});
+      if(!line)continue;
+      let parsed;
+      try{ parsed=JSON.parse(line.slice(5).trim()); }catch(e){ continue; }
+      if(parsed.error){
+        throw new Error(parsed.message||'Stream was interrupted. Please try again.');
+      }
+      if(parsed.delta){
+        fullText+=parsed.delta;
+        if(typeof onDelta==='function')onDelta(parsed.delta);
+      }
+      if(parsed.done){
+        return fullText;
+      }
+    }
+  }
+  return fullText;
 }
 
 // Shared between callAPI() and any other direct caller of /api/anthropic
@@ -742,7 +1097,7 @@ function _pgtAnthropicErrorMessage(error){
     }
     return 'Your access to this company has changed. Refreshing — please try again.';
   }
-  const _elabels={'api_error':'Anthropic API error — ','overloaded_error':'Anthropic overloaded — ','invalid_request_error':'Invalid request — ','proxy_error':'Proxy error — ','permission_error':'API key permission error — ','auth_error':'','rate_limit_error':''};
+  const _elabels={'api_error':'Anthropic API error — ','overloaded_error':'Anthropic overloaded — ','invalid_request_error':'Invalid request — ','proxy_error':'Proxy error — ','permission_error':'API key permission error — ','auth_error':'','rate_limit_error':'','usage_stopped':''};
   const _eprefix=_elabels.hasOwnProperty(_etype)?_elabels[_etype]:(_etype?'['+_etype+'] ':'');
   return _eprefix+_emsg;
 }

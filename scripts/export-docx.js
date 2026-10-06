@@ -28,7 +28,7 @@ function _docxOriginLabel(origin){
   if(origin==='diagnostic')return'Diagnostics';
   if(origin==='pi')return'Custom plan';
   if(origin==='doc')return'Session doc';
-  return'KPI tree';
+  return'Discovery Map';
 }
 
 // ── Outcome Verification Loop (DOCX-1/DOCX-2): build hypothesis display

@@ -59,6 +59,34 @@ function pcNormalizeBriefResponse(parsed) {
   };
 }
 
+// ── Outcome-Based Cost report-back (v9.31) — reports whether a
+// prototype-wireframe/prototype-brief call actually produced usable output,
+// via the existing Yield report-back endpoint (proxy/server.js,
+// POST /api/usage-events/units-generated). Fire-and-forget: this is
+// cost-accounting metadata, not user-facing state, so a failure here must
+// never block or delay the user seeing their prototype. Local copy of the
+// base-URL/auth-header pattern already duplicated per-file elsewhere in this
+// app (team-management.js's _tmProxyBase()/_tmCall(), cost-tower.js's
+// actLoadTeamNames()) rather than a cross-file call into any of them.
+async function _pcReportUnitsGenerated(clientCallId, unitsGenerated) {
+  try {
+    var authToken = '';
+    try { if (typeof authGetFreshToken === 'function') authToken = await authGetFreshToken(); } catch (e) {}
+    var host = window.location.hostname;
+    var isLocal = (host === '' || host === 'localhost' || host === '127.0.0.1');
+    var base = isLocal ? 'http://localhost:3001' : ((typeof PROXY_URL !== 'undefined' && PROXY_URL) ? PROXY_URL.replace(/\/api\/anthropic\/?$/, '') : 'https://product-diagnostics-proxy.onrender.com');
+    var companyId = (function () { try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || ''; } catch (e) { return ''; } })();
+    var headers = { 'Content-Type': 'application/json' };
+    if (authToken) headers['X-Auth-Token'] = authToken;
+    await fetch(base + '/api/usage-events/units-generated', {
+      method: 'POST', headers: headers,
+      body: JSON.stringify({ client_call_id: clientCallId, units_generated: unitsGenerated, company_id: companyId })
+    });
+  } catch (e) {
+    console.warn('[Prototype] units-generated report-back failed:', e);
+  }
+}
+
 // ── Style guide cache ──
 let _prototypeStyleCache = null;
 
@@ -326,6 +354,15 @@ function pcIsNonUIFeature(featId) {
 
 // ── Render entry point ──
 function pcRenderView(featId) {
+  // v9.25 — this is the single render entry point for the whole prototype
+  // view; confirmed via tracing its call sites (screenshot upload/removal,
+  // generation start/error, live-sync remote updates) that it always
+  // rebuilds #pc-refine-bar (and so #pc-ctx-input) unconditionally, one way
+  // or another. A guard here doesn't cover EVERY exit path though — see
+  // newScSetProtoView()/newScSetNavFeat() in story-canvas-new.js for the
+  // "leaving proto view entirely" and "switching to a different feature"
+  // cases, neither of which necessarily calls this function on the way out.
+  voiceStopActive('abort');
   const scroll = document.getElementById('pc-scroll');
   const refine = document.getElementById('pc-refine-bar');
   if (!scroll || !refine) return;
@@ -578,7 +615,10 @@ function pcRenderGenerated(featId, scroll, refine, feat, entry, v) {
       <div class="pc-refine-label">Refine Prototype</div>
       <div class="pc-refine-row">
         <textarea class="pc-refine-input" id="pc-ctx-input" placeholder="e.g. Add error state on step node, show estimated time remaining per step..." rows="2">${e(entry.additionalContext||'')}</textarea>
-        <button class="pc-regen-btn-sm" onclick="pcGenerate('${e(featId)}',this)"><i class="ti ti-refresh" style="font-size:11px;" aria-hidden="true"></i> Regenerate</button>
+        <div class="pc-refine-btn-group">
+          ${(typeof voiceButtonHtml==='function')?voiceButtonHtml({textareaId:'pc-ctx-input',buttonId:'pc-voice-btn',statusId:'pc-voice-status'}):''}
+          <button class="pc-regen-btn-sm" onclick="pcGenerate('${e(featId)}',this)"><i class="ti ti-refresh" style="font-size:11px;" aria-hidden="true"></i> Regenerate</button>
+        </div>
       </div>
     </div>`;
   } else {
@@ -600,24 +640,51 @@ function pcRenderGenerated(featId, scroll, refine, feat, entry, v) {
 function pcInjectWireframe(featId, html) {
   const container = document.getElementById('pc-wf-' + featId);
   if (!container) return;
-  // Revoke old blob URL if present
   const entry = protoStore[featId];
   const v = entry ? pcGetActiveVariant(featId) : null;
-  if (v && v.wireframeBlobUrl) {
-    try { URL.revokeObjectURL(v.wireframeBlobUrl); } catch (_) {}
-  }
-  // Create sandboxed iframe via blob URL
+  // v9.12.06 fix: capture the OLD url and only revoke it after the new
+  // iframe has been successfully constructed and appended — previously
+  // this revoked before attempting the new Blob/iframe creation, so a
+  // mid-attempt failure left v.wireframeBlobUrl pointing at an already-
+  // revoked URL. Also now unconditionally clears the old reference even
+  // if v is null on this call (a variant that didn't exist yet when first
+  // stored), rather than only clearing when v happened to already exist.
+  const _oldBlobUrl = v && v.wireframeBlobUrl ? v.wireframeBlobUrl : null;
   try {
-    const blob = new Blob([html], { type: 'text/html' });
+    // v9.12.06 fix: sanitize BEFORE constructing the Blob — previously raw
+    // AI-generated html went straight into the sandboxed iframe unfiltered,
+    // which is what caused the sandbox to block any <script> tag the LLM
+    // happened to include (visible to users as a console error on every
+    // prototype view). Stripping it here means there's nothing left for
+    // the sandbox to block, so the message stops appearing, and the same
+    // filtering the capture path already had now also protects the
+    // visible, long-lived preview.
+    const safeHtml = _pcPreparePreviewHTML(html);
+    const blob = new Blob([safeHtml], { type: 'text/html' });
     const blobUrl = URL.createObjectURL(blob);
-    if (v) v.wireframeBlobUrl = blobUrl;
     const iframe = document.createElement('iframe');
     iframe.className = 'pc-wf-iframe';
-    iframe.setAttribute('sandbox', 'allow-same-origin');
+    // v9.12.06 fix: tightened from 'allow-same-origin' to a fully empty
+    // sandbox value. Confirmed via code search that nothing in this app
+    // ever reads iframe.contentDocument/contentWindow on this specific
+    // preview iframe (unlike the capture iframe, which needs same-origin
+    // for html2canvas) — so there's no functional reason to grant it the
+    // real origin. An empty sandbox forces an opaque origin in addition
+    // to blocking scripts/forms/navigation, which is strictly more
+    // restrictive and removes allow-same-origin as later technical debt
+    // (per the HTML spec's own warning that allow-same-origin combined
+    // with allow-scripts can let a sandboxed frame remove its own sandbox
+    // — not our current config, but a risk if someone "fixes
+    // interactivity" here later by adding allow-scripts without
+    // reconsidering allow-same-origin too).
+    iframe.setAttribute('sandbox', '');
     iframe.setAttribute('title', 'Wireframe preview');
     iframe.src = blobUrl;
     container.innerHTML = '';
     container.appendChild(iframe);
+    // Only store/revoke AFTER the new iframe is successfully in the DOM.
+    if (v) v.wireframeBlobUrl = blobUrl;
+    if (_oldBlobUrl) { try { URL.revokeObjectURL(_oldBlobUrl); } catch (_) {} }
   } catch (err) {
     container.innerHTML = '<div class="pc-empty-section">Wireframe preview unavailable in this environment.</div>';
   }
@@ -862,8 +929,17 @@ function pcCopyPrompt(elId, btn) {
 // Call 1: wireframe + screenTitle + wireframeOutline (skipped for non-UI features)
 // Call 2: design brief + story coverage + external prompt
 async function pcGenerate(featId, triggerEl) {
+  // v9.25 code-review fix — canEditSession() now checked BEFORE stopping
+  // voice (was after): a read-only collaborator's click here is a no-op
+  // regardless, so it shouldn't also silently kill their dictation with no
+  // explanation.
   if(typeof canEditSession==='function'&&!canEditSession())return;
   if (!featId) return;
+  // stop-on-send: pcReadAdditionalContext() below reads #pc-ctx-input's
+  // live value synchronously, before this function's own loading state
+  // (v.generating=true) triggers any re-render, so stopping here first
+  // doesn't affect what gets captured.
+  voiceStopActive('abort');
 
   // pcReady guard
   if (!pcReady) {
@@ -993,6 +1069,14 @@ async function pcGenerate(featId, triggerEl) {
   let call1Ok = false;
   let parsed1 = null;
 
+  // Outcome-Based Cost report-back ids (v9.31) — one per underlying AI call,
+  // not per click. Only briefCallId ever reports a nonzero units_generated;
+  // wireframeCallId may only ever report 0, on its own failure. See
+  // proxy/server.js's CALLER_ATTRIBUTION_MODE comment for why (double-count
+  // risk if this asymmetry is ever "fixed" to be symmetric).
+  const wireframeCallId = (typeof crypto!=='undefined'&&crypto.randomUUID) ? crypto.randomUUID() : (Date.now()+'-'+Math.random().toString(36).slice(2));
+  const briefCallId = (typeof crypto!=='undefined'&&crypto.randomUUID) ? crypto.randomUUID() : (Date.now()+'-'+Math.random().toString(36).slice(2)+'-b');
+
   try {
     // Fetch style guide (signal-aware — aborts correctly if user leaves)
     const styleGuide = await _pcGetStyleGuide(signal);
@@ -1007,13 +1091,24 @@ async function pcGenerate(featId, triggerEl) {
 
       let parsed1Raw;
       try {
-        const txt1 = await callAPI(wfPrompt.sys, wfPrompt.usr, 4000, signal, 'claude-haiku-4-5', 'prototype-wireframe');
+        const txt1 = await callAPI(wfPrompt.sys, wfPrompt.usr, 4000, signal, 'claude-haiku-4-5', 'prototype-wireframe', undefined, { client_call_id: wireframeCallId });
         const clean1 = txt1.replace(/```json|```/g, '').trim();
         try { parsed1Raw = JSON.parse(clean1); }
         catch(pe1) { throw new Error('Wireframe response could not be parsed. Please try again.'); }
         parsed1 = pcNormalizeWireframeResponse(parsed1Raw);
         call1Ok = true;
       } catch(e1) {
+        // Safe to report 0 for a genuine network/timeout/parse failure —
+        // that row is either already auto-resolved to 0 server-side (no-op
+        // here, WHERE units_generated IS NULL guard) or would otherwise sit
+        // at units_generated=null forever. NOT safe for AbortError: the
+        // client gave up waiting, but proxy/server.js has no
+        // req.on('close')/req.aborted handling on this path, so the
+        // upstream call may still complete and insert a real 'success' row
+        // after we've already left. Reporting 0 in that case would
+        // permanently mislabel a real success as a failure with no way to
+        // self-correct — leave it unreported (null) instead.
+        if (!(e1 && e1.name === 'AbortError')) _pcReportUnitsGenerated(wireframeCallId, 0);
         e1.pcPhase = 1;
         throw e1;
       }
@@ -1041,11 +1136,16 @@ async function pcGenerate(featId, triggerEl) {
 
     let parsed2Raw;
     try {
-      const txt2 = await callAPI(briefPrompt.sys, briefPrompt.usr, 3000, signal, null, 'prototype-brief');
+      const txt2 = await callAPI(briefPrompt.sys, briefPrompt.usr, 3000, signal, null, 'prototype-brief', undefined, { client_call_id: briefCallId });
       const clean2 = txt2.replace(/```json|```/g, '').trim();
       try { parsed2Raw = JSON.parse(clean2); }
       catch(pe2) { throw new Error('Design brief response could not be parsed.'); }
     } catch(e2) {
+      // Same AbortError exception as wireframe's catch above — see that
+      // comment. A network/timeout/parse failure is safe to report as 0;
+      // an aborted client fetch is not, since the proxy may still complete
+      // the upstream call and insert a real success row after we've left.
+      if (!(e2 && e2.name === 'AbortError')) _pcReportUnitsGenerated(briefCallId, 0);
       e2.pcPhase = 2;
       throw e2;
     }
@@ -1063,10 +1163,23 @@ async function pcGenerate(featId, triggerEl) {
     try {
       briefData = pcNormalizeBriefResponse(parsed2Raw);
     } catch(e3a) {
+      _pcReportUnitsGenerated(briefCallId, 0);
       e3a.pcPhase = 3;
       e3a.pcSubphase = 'normalize';
       throw e3a;
     }
+
+    // Outcome-Based Cost: decide + report now, before the feature-existence
+    // check below — deliberately, not an oversight. "Created" measures that
+    // the model did its job, not that the user still has this feature to
+    // look at (confirmed product decision) — so this must fire even if the
+    // feature gets deleted, or the commit/render below crashes, a moment
+    // later. isNonUI features never attempt a wireframe, so the design
+    // brief's own substantive content is the only available signal for them.
+    const prototypeCreated = isNonUI
+      ? !!(briefData.screenPurpose && briefData.screenPurpose.trim())
+      : !!v.wireframeHTML;
+    _pcReportUnitsGenerated(briefCallId, prototypeCreated ? 1 : 0);
 
     // Feature existence check after Call 2
     const featNow = pcGetLiveFeature(featId);
@@ -1311,29 +1424,91 @@ async function _pcLoadHtml2Canvas() {
   return _pcHtml2CanvasPromise;
 }
 
-// ── DOM-based wireframe sanitizer for html2canvas capture ──
-function _pcSanitizeForCapture(html) {
-  try {
-    const tpl = document.createElement('template');
-    tpl.innerHTML = html;
-    // Remove unsafe elements
-    tpl.content.querySelectorAll('script,iframe,object,embed,link[rel="import"]')
-      .forEach(function(n){ n.remove(); });
-    // Remove inline event handlers and javascript: URLs
-    tpl.content.querySelectorAll('*').forEach(function(el) {
-      Array.from(el.attributes).forEach(function(attr) {
-        const name = attr.name.toLowerCase();
-        const val = String(attr.value || '').trim().toLowerCase();
-        if (name.startsWith('on')) el.removeAttribute(attr.name);
-        if ((name === 'href' || name === 'src' || name === 'xlink:href') &&
-            val.startsWith('javascript:')) el.removeAttribute(attr.name);
-      });
+// ── Shared stripping primitive for AI-generated wireframe HTML ──
+// v9.12.06 hardening: this replaces the old _pcSanitizeForCapture, which
+// was used for BOTH the hidden capture iframe AND (after this same patch)
+// the visible preview iframe, despite the two having different lifetimes,
+// visibility, and risk profiles. Per adversarial review, this is
+// deliberately named to describe exactly what it does — a blocklist of
+// active/executable constructs — and NOT named in a way that implies a
+// general "this HTML is now safe" guarantee, which a blocklist of this
+// size cannot honestly claim. Two thin, purpose-specific wrappers below
+// (_pcPreparePreviewHTML, _pcPrepareCaptureHTML) call this with the same
+// policy today; kept separate per-caller so their behavior can diverge
+// later without coupling one path's changes to the other's.
+//
+// Known, accepted limitation (confirmed via adversarial review, not
+// fixed here — this is a blocklist, not a full HTML sanitizer like
+// DOMPurify): sufficiently obscure payloads (SVG-embedded handlers,
+// mutation-XSS-style parser quirks, CSS-based resource requests) may
+// still survive. The sandbox attribute on both iframes remains the real
+// security boundary; this function is defense-in-depth on top of that,
+// not a replacement for it.
+function _pcStripActiveWireframeMarkup(html) {
+  if (typeof html !== 'string') return '';
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+
+  // Remove elements capable of executing code, navigating the frame, or
+  // altering how relative URLs/targets resolve within it.
+  tpl.content.querySelectorAll(
+    'script,iframe,object,embed,base,meta[http-equiv="refresh" i],link[rel="import" i]'
+  ).forEach(function(n){ n.remove(); });
+
+  tpl.content.querySelectorAll('*').forEach(function(el) {
+    Array.from(el.attributes).forEach(function(attr) {
+      const name = attr.name.toLowerCase();
+      // Strip ASCII control characters (tabs, newlines, etc.) before
+      // scheme-matching — browsers ignore these when parsing a URL
+      // scheme, so "java\tscript:" still executes as javascript: even
+      // though a naive .trim()-only check would miss it.
+      const normalized = String(attr.value || '')
+        .replace(/[\u0000-\u0020\u007f-\u009f]/g, '')
+        .toLowerCase();
+
+      if (name.startsWith('on')) { el.removeAttribute(attr.name); return; }
+      // Beaconing attribute — not needed for a visual mockup, no reason
+      // to let a wireframe emit tracking requests on click.
+      if (name === 'ping') { el.removeAttribute(attr.name); return; }
+      if (name === 'href' || name === 'src' || name === 'xlink:href' ||
+          name === 'action' || name === 'formaction') {
+        if (normalized.startsWith('javascript:') || normalized.startsWith('vbscript:')) {
+          el.removeAttribute(attr.name);
+        }
+      }
     });
-    return tpl.innerHTML;
+  });
+
+  return tpl.innerHTML;
+}
+
+// ── Preview policy — used for the long-lived, user-visible iframe ──
+function _pcPreparePreviewHTML(html) {
+  try {
+    return _pcStripActiveWireframeMarkup(html);
   } catch(e) {
-    console.warn('[PC] Sanitize failed:', e.message);
-    // Fallback: strip script tags with regex
-    return html.replace(/<script[\s\S]*?<\/script>/gi, '');
+    console.warn('[PC] Preview HTML preparation failed, showing nothing rather than unfiltered content:', e.message);
+    // v9.12.06 fix: fail CLOSED, not open. The old fallback
+    // (html.replace(/<script>.../, '')) shipped a much weaker filter with
+    // none of the attribute-level stripping above — confirmed via
+    // adversarial review to be a real gap, not an acceptable degradation.
+    // An empty string here renders as a blank preview, which is safe;
+    // returning partially-filtered attacker-influenced HTML is not.
+    return '';
+  }
+}
+
+// ── Capture policy — used for the short-lived, hidden html2canvas iframe ──
+// Currently identical filtering to the preview policy; kept as a separate
+// named function (not a shared call site) so this path's behavior can be
+// tuned independently later (e.g. if html2canvas needs different
+// image/font/CSS allowances) without touching the preview path.
+function _pcPrepareCaptureHTML(html) {
+  try {
+    return _pcStripActiveWireframeMarkup(html);
+  } catch(e) {
+    console.warn('[PC] Capture HTML preparation failed, aborting capture rather than using unfiltered content:', e.message);
+    return '';
   }
 }
 
@@ -1341,10 +1516,19 @@ function _pcSanitizeForCapture(html) {
 // Uses a sandboxed same-origin iframe so wireframe <style> tags never
 // leak into the live document — previously caused white border around app.
 async function _pcCaptureWireframeAsPng(wireframeHTML) {
-  const safeHTML = _pcSanitizeForCapture(wireframeHTML);
+  const safeHTML = _pcPrepareCaptureHTML(wireframeHTML);
 
   const iframe = document.createElement('iframe');
   iframe.setAttribute('aria-hidden', 'true');
+  // v9.12.06 fix: this iframe previously had NO sandbox attribute at all —
+  // confirmed via adversarial review to be the more serious of the two
+  // gaps found (the visible preview iframe was already sandboxed; this
+  // hidden one was not). allow-same-origin is required here (unlike the
+  // preview iframe below) because this function reads iframe.contentDocument
+  // directly for html2canvas — but scripts remain fully blocked regardless
+  // of sanitizer coverage, closing the "one sanitizer bypass = full
+  // same-origin code execution" risk the review identified.
+  iframe.setAttribute('sandbox', 'allow-same-origin');
   iframe.style.cssText = 'position:fixed;left:-10000px;top:0;width:1200px;height:900px;border:0;visibility:hidden;pointer-events:none;';
   document.body.appendChild(iframe);
 

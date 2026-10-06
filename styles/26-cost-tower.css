@@ -1,0 +1,482 @@
+/* AI Cost Control Tower (v9.28) — loaded only by ai-cost-tower.html.
+   Component classes and layout adapted from the reviewed wireframe
+   (ai-cost-control-tower-wireframe.html). Reuses the app's real design
+   tokens from styles/00-tokens.css wherever one exists (--navy, --purple,
+   --purple-deep, --purple-light, --purple-pale, --blue, --blue-pale,
+   --blue-mid, --green, --green-pale, --amber, --amber-pale, --red, --card,
+   --divider, --label, --t1..t4) rather than redefining them — this file
+   only adds --red-pale, the one status-pale variant missing from the
+   global token set (green/amber both already have one), scoped locally
+   since this page is the only consumer and the global token file isn't
+   being touched. The wireframe's own local --label override (#7C8799,
+   its own comment: "kept from the accessibility/contrast fix, intentionally
+   not the live app's default") is NOT carried forward — this page uses the
+   app's real var(--label) for consistency with every other screen, per
+   DESIGN_SYSTEM.md's reuse-existing-tokens rule. */
+
+:root{
+  --red-pale:#FCE8E8;
+  --row-hover:#FAFBFD;
+}
+
+/* Code-review pass: every #fff in this file was replaced with the existing
+   var(--white) token (styles/00-tokens.css). A handful of one-off accent
+   hex values remain (opp/warn-chip border colors #E9C574/#EACB86/#B7DFD6,
+   matrix-flag glow #e0a0a0) — none has an exact match among this app's
+   existing tokens, and inventing new global tokens for single-use border
+   shades was judged out of scope for this pass. row-hover was promoted to
+   a local var(--row-hover) above (code-review pass, v9.36) once a second
+   rule needed the identical shade — AI_EDITING_RULES.md disallows a
+   hardcoded hex in component CSS, and a repeated literal is no longer a
+   true one-off. */
+
+.act-body{font-size:13px;color:var(--t1);}
+.act-body *{box-sizing:border-box;}
+
+/* ===== tab row (page-local, mirrors the real app's .tab-row/.tab-btn exactly) ===== */
+.act-out-hdr{padding:0 22px 0 8px;border-bottom:1px solid var(--divider);background:var(--white);flex-shrink:0;}
+.act-tab-row{display:flex;}
+.act-tab-btn{font-family:var(--font)!important;font-size:11px!important;font-weight:500;color:var(--t3);background:none;border:none;padding:10px 16px;cursor:pointer;border-bottom:2px solid transparent;transition:all .15s;display:flex;align-items:center;gap:5px;}
+.act-tab-btn:hover:not(.active){color:var(--t2);}
+.act-tab-btn.active{color:var(--purple);border-bottom-color:var(--purple);font-weight:700;}
+
+.act-content-scroll{flex:1;min-height:0;overflow-y:auto;background:var(--white);}
+.act-content-scroll::-webkit-scrollbar{width:3px;}
+.act-content-scroll::-webkit-scrollbar-thumb{background:var(--divider);border-radius:2px;}
+.act-content{max-width:1160px;margin:0 auto;padding:22px 24px 70px;}
+.act-screen{display:none;}
+.act-screen.on{display:block;}
+
+.act-screen-header-row{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px;}
+.act-screen-title-block{display:flex;flex-direction:column;gap:4px;}
+/* Wraps (period chip + Export button) as one flex child of
+   .act-screen-header-row, so justify-content:space-between only ever sees
+   two top-level children (title block, actions) — without this, a bare
+   third child would float in the row's middle instead of sitting flush
+   against Export. Used on Overview, Cost Breakdown, Outcome-Based Cost. */
+.act-header-actions{display:flex;align-items:center;gap:10px;flex-shrink:0;}
+.act-eyebrow{font-size:10px;font-weight:800;color:var(--blue);letter-spacing:1px;text-transform:uppercase;}
+.act-screen-subtitle{font-size:11px;color:var(--t3);}
+.act-section-title{font-size:14px;font-weight:800;color:var(--t1);margin:26px 0 6px;}
+.act-section-title-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:26px 0 8px;}
+.act-section-title-row .act-section-title{margin:0;}
+.act-section-insight{font-size:12px;color:var(--t2);line-height:1.55;margin-bottom:12px;max-width:820px;}
+.act-section-insight b{color:var(--t1);}
+.act-section-caveat{display:inline-flex;align-items:center;gap:5px;font-size:10px;color:var(--t3);background:var(--card);border:1px solid var(--divider);border-radius:20px;padding:4px 10px;margin-bottom:12px;}
+.act-scope-note{font-size:10px;color:var(--t4);}
+
+button:focus-visible.act-fv,
+.act-body button:focus-visible,
+.act-body input:focus-visible,
+.act-body select:focus-visible,
+.act-dropdown-chip:focus-visible,
+.act-tab-btn:focus-visible,
+.act-anchor-chip:focus-visible{
+  outline:2px solid var(--purple-light);
+  outline-offset:2px;
+  box-shadow:0 0 0 3px rgba(140,105,240,.18);
+}
+
+.act-btn{font-family:var(--font);font-size:11px;font-weight:700;border-radius:6px;padding:7px 13px;cursor:pointer;border:1px solid transparent;transition:all .12s;}
+.act-btn-primary{background:var(--purple);color:var(--white);}
+.act-btn-primary:hover{background:var(--purple-deep);}
+.act-btn-secondary{background:var(--blue-pale);border-color:var(--blue-mid);color:var(--blue);}
+.act-btn-secondary:hover{background:var(--blue-mid);}
+.act-btn-tertiary{background:var(--white);border-color:var(--divider);color:var(--t2);}
+.act-btn-tertiary:hover{border-color:var(--t3);}
+.act-btn-sm{padding:5px 10px;font-size:10px;}
+.act-btn:disabled{opacity:.5;cursor:not-allowed;}
+
+/* .export-cta-btn is the real app's class (styles/05-kpi-tree.css), reused
+   for behavior/precedent (spec Section 3.1) but that stylesheet is not
+   loaded on this standalone page — duplicated here rather than pulling in
+   the whole (unrelated) KPI-tree stylesheet for one button class. */
+.export-cta-btn{font-family:var(--font)!important;font-size:11px;font-weight:600;color:var(--purple);background:none;border:1px solid var(--purple);border-radius:6px;padding:7px 12px;cursor:pointer;display:flex;align-items:center;gap:6px;transition:all .12s;flex-shrink:0;}
+.export-cta-btn:hover{background:var(--purple);color:var(--white);}
+.export-cta-btn:disabled{opacity:.4;cursor:not-allowed;}
+
+/* ===== toast (layout/motion aligned to the shared .app-toast pattern,
+   styles/01-base.css — top-anchored, pastel + border per type, icon,
+   dismiss, width-capped, slide+fade; kept as this page's own local class
+   rather than importing utils.js, same standalone-page convention as
+   actEsc()/actToast() itself). Colors intentionally use THIS page's own
+   existing tokens (--blue/--red/--green + their pale variants), not
+   .app-toast's hardcoded hex — matches this file's own --blue/--red/--green
+   token convention (.act-status-pill/.act-tag-status use the same
+   saturated-token-as-text-on-pale-background pattern), so palette is not
+   pixel-identical to .app-toast, only the layout/motion is. ===== */
+.act-toast{position:fixed;top:24px;left:50%;transform:translateX(-50%) translateY(-16px);display:flex;align-items:center;gap:8px;padding:9px 14px;border-radius:8px;font-size:11px;font-weight:500;font-family:var(--font);max-width:420px;width:max-content;border:1px solid;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,.12);}
+.act-toast.on{opacity:1;transform:translateX(-50%) translateY(0);pointer-events:auto;}
+.act-toast-info{background:var(--blue-pale);color:var(--blue);border-color:var(--blue);}
+.act-toast-error{background:var(--red-pale);color:var(--red);border-color:var(--red);}
+.act-toast-success{background:var(--green-pale);color:var(--green);border-color:var(--green);}
+.act-toast svg{flex-shrink:0;}
+.act-toast-msg{flex:1;}
+.act-toast-close{background:none;border:none;cursor:pointer;opacity:.5;padding:0 0 0 4px;font-size:12px;color:inherit;line-height:1;}
+.act-toast-close:hover{opacity:1;}
+
+/* ===== controls ===== */
+.act-period-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--card);border:1px solid var(--divider);border-radius:10px;padding:10px 12px;margin-bottom:16px;}
+.act-period-left{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.act-period-label{font-size:10px;font-weight:800;color:var(--label);text-transform:uppercase;letter-spacing:.55px;}
+.act-dropdown-chip-wrap{position:relative;}
+.act-dropdown-chip{display:flex;align-items:center;gap:6px;font-family:var(--font);font-size:11px;font-weight:700;color:var(--t2);background:var(--white);border:1px solid var(--divider);border-radius:7px;padding:7px 11px;cursor:pointer;}
+.act-dropdown-chip:hover{border-color:var(--purple-light);}
+.act-dropdown-chip-label{color:var(--t4);font-weight:600;}
+.act-dropdown-chip-value{color:var(--t1);font-weight:800;}
+.act-chip-chevron{color:var(--t4);flex-shrink:0;}
+.act-dropdown-chip-menu{display:none;position:absolute;top:calc(100% + 5px);left:0;background:var(--white);border:1px solid var(--divider);border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,0.12);min-width:170px;z-index:20;overflow:hidden;}
+.act-dropdown-chip-menu.open{display:block;}
+.act-dropdown-chip-menu button{display:block;width:100%;text-align:left;font-family:var(--font);font-size:11px;color:var(--t2);background:none;border:none;padding:8px 12px;cursor:pointer;}
+.act-dropdown-chip-menu button:hover{background:var(--card);color:var(--purple);}
+.act-data-confidence{display:flex;align-items:center;gap:8px;font-size:10.5px;color:var(--t3);}
+.act-confidence-pill{display:inline-flex;align-items:center;gap:5px;background:var(--green-pale);color:var(--green);border-radius:20px;padding:4px 10px;font-size:10px;font-weight:800;}
+.act-confidence-pill.warn{background:var(--amber-pale);color:var(--amber);}
+.act-confidence-dot{width:6px;height:6px;border-radius:50%;background:currentColor;}
+
+.act-filter-toolbar-hint{font-size:10px;color:var(--t4);}
+
+/* ===== cards ===== */
+.act-scoped-card{border:1px solid var(--divider);border-radius:12px;padding:17px 18px;margin-bottom:16px;background:var(--white);}
+.act-scoped-card.soft{background:var(--card);}
+.act-scoped-card .act-section-title{margin-top:0;}
+.act-scoped-card-note{font-size:10px;color:var(--t4);margin-top:9px;line-height:1.5;}
+.act-group-card{border:1px solid var(--divider);border-radius:13px;margin-bottom:18px;overflow:hidden;background:var(--white);}
+.act-group-head{background:var(--card);border-bottom:1px solid var(--divider);padding:12px 16px;}
+/* Scoped to Main Breakdown only (#act-main-breakdown), not .act-group-head
+   generally — Economics Signals/Operational Signals/Trust & Audit reuse the
+   same class with only kicker+title as children (no chip) and must keep
+   their current vertical stacking; this is the only one of the four that
+   gets a second flex item. flex-wrap:wrap is a safety net for the longest
+   Group By value ("Prompt Version") against the title text. */
+#act-main-breakdown .act-group-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;}
+.act-group-kicker{font-size:9.5px;font-weight:800;letter-spacing:.7px;color:var(--label);text-transform:uppercase;}
+.act-group-title{font-size:14px;font-weight:800;margin-top:2px;}
+.act-group-body{padding:16px 18px 18px;}
+
+.act-insight-card{border:1px solid var(--divider);border-radius:12px;background:var(--white);padding:20px 22px;position:relative;overflow:hidden;}
+.act-insight-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;}
+.act-insight-card.status-amber::before{background:var(--amber);}
+.act-insight-card.status-green::before{background:var(--green);}
+.act-insight-card.status-red::before{background:var(--red);}
+.act-status-pill{display:inline-flex;align-items:center;gap:5px;font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:0.5px;border-radius:20px;padding:4px 11px 4px 9px;margin-bottom:12px;}
+.act-status-pill.amber{background:var(--amber-pale);color:var(--amber);}
+.act-status-pill.green{background:var(--green-pale);color:var(--green);}
+.act-status-pill.red{background:var(--red-pale);color:var(--red);}
+.act-status-dot{width:6px;height:6px;border-radius:50%;background:currentColor;}
+.act-insight-headline{font-size:17px;font-weight:800;color:var(--t1);line-height:1.38;margin-bottom:8px;max-width:780px;}
+.act-insight-support{font-size:12.5px;color:var(--t2);line-height:1.6;margin-bottom:14px;max-width:780px;}
+.act-insight-rec{background:var(--card);border:1px solid var(--divider);border-radius:9px;padding:13px 14px;display:flex;gap:10px;align-items:flex-start;}
+.act-insight-rec-icon{width:24px;height:24px;border-radius:7px;background:var(--purple-pale);color:var(--purple);display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px;}
+.act-insight-rec-icon svg{width:13px;height:13px;}
+.act-insight-rec-text{font-size:12px;color:var(--t2);line-height:1.55;}
+.act-insight-rec-text b{color:var(--t1);}
+.act-evidence-table{width:100%;border-collapse:collapse;font-size:11.5px;margin-top:14px;border-top:1px solid var(--divider);}
+.act-evidence-table th{text-align:left;font-size:9px;font-weight:800;color:var(--label);text-transform:uppercase;letter-spacing:0.5px;padding:8px 8px 6px;border-bottom:1px solid var(--divider);}
+.act-evidence-table td{padding:7px 8px;border-bottom:1px solid var(--divider);color:var(--t2);}
+.act-evidence-note{font-size:10px;color:var(--t4);margin-top:8px;line-height:1.5;}
+
+.act-kpi-strip{display:grid;grid-template-columns:1.2fr repeat(5,1fr);gap:1px;background:var(--divider);border:1px solid var(--divider);border-radius:10px;overflow:hidden;}
+.act-kpi{background:var(--white);padding:13px 14px;min-width:0;}
+.act-kpi.health{background:var(--amber-pale);}
+.act-kpi.health.critical{background:var(--red-pale);}
+.act-kpi.health.ok{background:var(--green-pale);}
+.act-kpi-label{font-size:9.5px;font-weight:800;color:var(--label);text-transform:uppercase;letter-spacing:0.5px;}
+.act-kpi-value{font-size:17px;font-weight:800;color:var(--t1);margin-top:4px;}
+.act-kpi-value.amber{color:var(--amber);}
+.act-kpi-value.red{color:var(--red);}
+.act-kpi-value.green{color:var(--green);}
+.act-kpi-sub{font-size:10px;color:var(--t4);margin-top:2px;}
+.act-kpi-delta{font-size:10px;margin-top:3px;font-weight:700;}
+.act-kpi-delta.up{color:var(--red);}
+.act-kpi-delta.down{color:var(--green);}
+.act-kpi-delta.flat{color:var(--t4);}
+
+.act-trust-mini{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px;}
+.act-trust-chip{border:1px solid var(--divider);background:var(--white);border-radius:8px;padding:9px 10px;font-size:10px;color:var(--t3);}
+.act-trust-chip b{display:block;color:var(--t1);font-size:12px;margin-bottom:2px;}
+
+.act-unassigned-line{display:flex;align-items:center;justify-content:space-between;gap:14px;background:var(--card);border:1px solid var(--divider);border-radius:10px;padding:12px 14px;font-size:12px;color:var(--t2);}
+.act-unassigned-left{display:flex;align-items:center;gap:10px;}
+.act-unassigned-line b{color:var(--t1);}
+.act-unassigned-icon{width:22px;height:22px;border-radius:6px;background:var(--amber-pale);color:var(--amber);display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.act-unassigned-icon svg{width:12px;height:12px;}
+
+.act-driver-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+.act-driver-card{border:1px solid var(--divider);border-radius:10px;padding:14px;background:var(--white);}
+.act-driver-top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;}
+.act-driver-tag{font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;border-radius:20px;padding:3px 8px;background:var(--purple-pale);color:var(--purple);}
+.act-driver-title{font-size:13px;font-weight:800;color:var(--t1);}
+.act-driver-value{font-size:18px;font-weight:800;margin-top:6px;}
+.act-driver-note{font-size:10.5px;color:var(--t3);margin-top:4px;line-height:1.45;}
+.act-driver-link{font-size:10px;font-weight:800;color:var(--blue);margin-top:10px;cursor:pointer;}
+
+/* ===== tables ===== */
+.act-data-table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid var(--divider);border-radius:10px;overflow:hidden;}
+.act-data-table thead th{text-align:left;font-size:10px;font-weight:800;color:var(--label);text-transform:uppercase;letter-spacing:0.5px;padding:10px 12px;background:var(--card);border-bottom:1px solid var(--divider);}
+.act-data-table td{padding:10px 12px;border-bottom:1px solid var(--divider);font-size:12px;color:var(--t2);}
+.act-data-table tbody tr:last-child td{border-bottom:none;}
+.act-data-table tbody tr:hover{background:var(--row-hover);}
+.act-cell-name{font-weight:800;color:var(--t1);}
+.act-cell-muted{font-size:10.5px;color:var(--t4);}
+.act-cell-bar{display:flex;align-items:center;gap:8px;}
+.act-cell-bar-track{width:64px;height:6px;background:var(--card);border-radius:3px;overflow:hidden;flex-shrink:0;}
+.act-cell-bar-fill{height:100%;background:var(--blue-mid);}
+.act-delta-up{color:var(--red);font-weight:800;}
+.act-delta-down{color:var(--green);font-weight:800;}
+.act-delta-flat{color:var(--t4);font-weight:700;}
+.act-tag-status{font-size:8.5px;font-weight:800;text-transform:uppercase;letter-spacing:0.4px;border-radius:20px;padding:3px 8px;display:inline-flex;align-items:center;gap:4px;}
+.act-tag-status.ok{background:var(--green-pale);color:var(--green);}
+.act-tag-status.warn{background:var(--amber-pale);color:var(--amber);}
+.act-tag-status.bad{background:var(--red-pale);color:var(--red);}
+.act-tag-status.info{background:var(--blue-pale);color:var(--blue);}
+
+.act-callout{display:flex;gap:10px;align-items:flex-start;border-radius:9px;padding:12px 14px;margin-top:12px;font-size:11.5px;color:var(--t2);line-height:1.55;}
+.act-callout.blue{background:var(--blue-pale);border:1px solid var(--blue-mid);}
+.act-callout.card{background:var(--card);border:1px solid var(--divider);}
+.act-callout.amber{background:var(--amber-pale);border:1px solid #E9C574;}
+.act-callout b{color:var(--t1);}
+
+.act-empty-state{border:1px dashed var(--divider);border-radius:10px;padding:22px;text-align:center;background:var(--card);}
+.act-empty-state-title{font-size:12px;font-weight:800;color:var(--t2);margin-bottom:4px;}
+.act-empty-state-sub{font-size:11px;color:var(--t4);max-width:520px;margin:0 auto;line-height:1.5;}
+
+/* ===== planning ===== */
+.act-planning-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:16px;align-items:stretch;}
+.act-planning-grid .act-scoped-card{display:flex;flex-direction:column;}
+.act-planning-grid .act-config-card{display:flex;flex-direction:column;margin-bottom:0;}
+/* Scoped to Cost Controls only: pairs a margin-less .act-config-card with a
+   .act-scoped-card (which carries its own margin-bottom:16px for its many
+   other standalone/stacked uses on this page, e.g. Role-Based Unit
+   Economics, Alerts, Cost Breakdown's Operational Signals) — zeroing that
+   margin everywhere inside .act-planning-grid made every OTHER
+   .act-scoped-card/.act-scoped-card pairing on the page lose its spacing
+   too. Scoping to .cc-body keeps the height-match fix local to the one
+   pairing that actually needs it. */
+.cc-body .act-planning-grid .act-scoped-card{margin-bottom:0;}
+.act-opportunity-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px;}
+.act-opp-card{border:1px solid var(--divider);border-radius:12px;background:var(--white);padding:15px;position:relative;overflow:hidden;}
+.act-opp-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--purple);}
+.act-opp-head{display:flex;align-items:start;justify-content:space-between;gap:10px;margin-bottom:8px;}
+.act-opp-title{font-size:13px;font-weight:800;line-height:1.35;}
+.act-opp-rank{font-size:9px;font-weight:800;color:var(--white);background:var(--purple);border-radius:20px;padding:4px 8px;white-space:nowrap;}
+.act-opp-gap{font-size:18px;font-weight:800;color:var(--amber);margin:8px 0 2px;}
+.act-opp-savings{font-size:20px;font-weight:800;color:var(--green);margin:8px 0 2px;}
+.act-opp-sub{font-size:10.5px;color:var(--t4);}
+.act-opp-evidence{font-size:11px;line-height:1.45;color:var(--t2);margin-top:10px;}
+.act-opp-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:11px;}
+.act-opp-chip{font-size:9px;font-weight:800;border-radius:20px;padding:3px 7px;background:var(--card);color:var(--t3);border:1px solid var(--divider);}
+.act-opp-chip.warn{background:var(--amber-pale);color:var(--amber);border-color:#EACB86;}
+.act-opp-chip.ok{background:var(--green-pale);color:var(--green);border-color:#B7DFD6;}
+.act-opp-action{margin-top:12px;display:flex;justify-content:flex-end;}
+
+.act-config-card{border:1px solid var(--divider);border-radius:12px;background:var(--white);padding:16px 18px;}
+.act-config-card .act-section-title{margin-top:0;}
+.act-config-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px 20px;}
+.act-field{display:flex;flex-direction:column;gap:5px;}
+.act-field-label{font-size:10px;font-weight:800;color:var(--label);text-transform:uppercase;letter-spacing:0.5px;}
+.act-field input,.act-field select{font-family:var(--font);font-size:12px;color:var(--t1);border:1px solid var(--divider);border-radius:7px;padding:8px 10px;background:var(--white);}
+.act-field input[readonly]{background:var(--card);border-style:dashed;color:var(--purple);font-weight:700;cursor:default;}
+.act-field-label .act-computed-tag{font-weight:500;text-transform:none;letter-spacing:0;color:var(--t4);font-size:9px;}
+.act-field-hint{font-size:10px;color:var(--t4);}
+.act-config-footer{display:flex;justify-content:flex-end;margin-top:auto;padding-top:14px;border-top:1px solid var(--divider);}
+
+.act-budget-card{border:1px solid var(--divider);border-radius:12px;padding:16px 18px;background:var(--white);margin-bottom:14px;}
+.act-budget-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;}
+.act-budget-name{font-size:12.5px;font-weight:800;color:var(--t1);}
+.act-budget-figures{font-size:11px;color:var(--t3);}
+.act-budget-bar-track{height:10px;background:var(--card);border-radius:5px;overflow:hidden;margin:8px 0 6px;}
+.act-budget-bar-fill{height:100%;border-radius:5px;background:var(--amber);transition:width .2s;}
+.act-budget-foot{display:flex;justify-content:space-between;font-size:10.5px;color:var(--t3);}
+
+.act-alert-list{overflow-y:auto;max-height:272px;}
+.act-alert-list::-webkit-scrollbar{width:6px;}
+.act-alert-list::-webkit-scrollbar-thumb{background:var(--divider);border-radius:3px;}
+.act-alert-row{position:relative;padding:12px 34px 12px 0;border-bottom:1px solid var(--divider);background:var(--white);}
+.act-alert-row:first-child{padding-top:6px;}
+.act-alert-row:last-child{border-bottom:none;}
+.act-alert-row-top{display:flex;align-items:center;gap:10px;margin-bottom:6px;}
+.act-alert-level{font-size:8.5px;font-weight:800;text-transform:uppercase;letter-spacing:0.5px;border-radius:20px;padding:3px 8px;flex-shrink:0;}
+.act-alert-level.warn{background:var(--amber-pale);color:var(--amber);}
+.act-alert-level.escalate{background:var(--red-pale);color:var(--red);}
+.act-alert-title{font-size:12px;font-weight:700;color:var(--t1);flex:1;}
+.act-alert-date{font-size:10px;color:var(--t4);flex-shrink:0;}
+.act-alert-what{font-size:11px;color:var(--t3);line-height:1.5;margin-bottom:8px;padding-left:2px;}
+.act-alert-ack-done{font-size:10px;font-weight:800;color:var(--green);display:inline-flex;align-items:center;gap:4px;}
+.act-alert-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;}
+.act-alert-x{position:absolute;top:9px;right:9px;width:20px;height:20px;border-radius:5px;border:none;background:none;color:var(--t4);display:flex;align-items:center;justify-content:center;cursor:pointer;opacity:0;transition:opacity .12s,background .12s,color .12s;}
+.act-alert-row:hover .act-alert-x{opacity:1;}
+.act-alert-x:hover{background:var(--red-pale);color:var(--red);}
+.act-alert-x:focus-visible{opacity:1;}
+
+/* ===== Cost Controls collapsible bar (AI Governance restructure) ===== */
+.cc-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--card);border:1px solid var(--divider);border-radius:10px;padding:12px 16px;cursor:pointer;user-select:none;margin-top:26px;}
+.cc-bar:hover{border-color:var(--purple-light);}
+.cc-bar-left{display:flex;align-items:center;gap:9px;}
+.cc-bar-title{font-size:13px;font-weight:800;color:var(--t1);}
+.cc-bar-sub{font-size:10.5px;color:var(--t3);}
+.cc-chevron{color:var(--t3);flex-shrink:0;transition:transform .15s;}
+.cc-chevron.open{transform:rotate(180deg);}
+.cc-body{padding-top:14px;}
+
+.act-v11-note{display:flex;align-items:flex-start;gap:10px;background:var(--card);border:1px dashed var(--divider);border-radius:10px;padding:13px 14px;margin-top:14px;font-size:11px;color:var(--t3);line-height:1.55;}
+.act-v11-note b{color:var(--t2);}
+
+.act-matrix-wrap{border:1px solid var(--divider);border-radius:12px;padding:18px;background:var(--white);position:relative;}
+.act-matrix-plot{position:relative;height:300px;margin:12px 48px 34px 58px;border-left:2px solid var(--divider);border-bottom:2px solid var(--divider);background:
+  linear-gradient(to right,transparent 49.7%,rgba(208,213,232,.7) 49.7%,rgba(208,213,232,.7) 50.3%,transparent 50.3%),
+  linear-gradient(to top,transparent 49.7%,rgba(208,213,232,.7) 49.7%,rgba(208,213,232,.7) 50.3%,transparent 50.3%);
+}
+.act-matrix-quad-label{position:absolute;font-size:8.5px;font-weight:800;text-transform:uppercase;letter-spacing:0.4px;color:var(--t4);}
+.act-matrix-dot{position:absolute;border-radius:50%;background:rgba(95,30,190,.85);border:2px solid var(--white);box-shadow:0 0 0 1px var(--purple-light);transform:translate(-50%,50%);cursor:pointer;}
+.act-matrix-dot.flagged{background:rgba(163,45,45,.9);box-shadow:0 0 0 1px #e0a0a0;}
+.act-matrix-dot-label{position:absolute;font-size:9.5px;font-weight:700;color:var(--t2);white-space:nowrap;}
+.act-matrix-tooltip{display:none;position:absolute;bottom:calc(100% + 9px);left:50%;transform:translateX(-50%);background:var(--navy);color:var(--white);font-size:10px;line-height:1.6;padding:8px 11px;border-radius:6px;white-space:nowrap;box-shadow:0 2px 10px rgba(0,0,0,0.2);z-index:15;text-align:left;}
+.act-matrix-tooltip b{display:block;font-size:10.5px;margin-bottom:2px;}
+.act-matrix-tooltip::after{content:'';position:absolute;top:100%;left:50%;transform:translateX(-50%);border:5px solid transparent;border-top-color:var(--navy);}
+.act-matrix-dot:hover .act-matrix-tooltip{display:block;}
+.act-matrix-axis-label{position:absolute;font-size:10px;font-weight:800;color:var(--t3);text-transform:uppercase;letter-spacing:0.5px;}
+.act-matrix-legend{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:10.5px;color:var(--t3);}
+.act-legend-items{display:flex;gap:14px;flex-wrap:wrap;}
+.act-legend-dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px;background:var(--purple);}
+.act-legend-dot.red{background:var(--red);}
+
+.act-foot-hint{font-size:9.5px;color:var(--t4);margin-top:10px;line-height:1.5;}
+.act-anchor-row{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 14px;}
+.act-anchor-chip{font-size:10px;font-weight:800;color:var(--blue);background:var(--blue-pale);border:1px solid var(--blue-mid);border-radius:20px;padding:5px 10px;cursor:pointer;}
+
+.act-modal-overlay{display:none;position:fixed;inset:0;background:rgba(17,17,20,0.45);z-index:100;}
+.act-modal-overlay.open{display:block;}
+.act-modal-box{display:none;flex-direction:column;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--white);border-radius:12px;box-shadow:0 16px 48px rgba(0,0,0,0.24);z-index:101;width:600px;max-width:92vw;max-height:80vh;overflow:hidden;}
+.act-modal-box.open{display:flex;}
+/* Switch App modal (Choose an app) — matches index.html's narrower,
+   top-aligned "Choose a company" modal instead of this shared shell's own
+   default (600px, vertically centered), sized for other content on this
+   page like the Custom Date Range picker. Toggled via classList in
+   actOpenSwitchAppModal()/actCloseModal(), not inline styles, so it can
+   never partially apply/clear one property while leaving another stale. */
+.act-modal-box.act-modal-compact{top:40px;transform:translateX(-50%);width:340px;}
+.act-modal-header{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--divider);flex-shrink:0;}
+.act-modal-title{font-size:13px;font-weight:800;color:var(--t1);}
+.act-modal-close{background:none;border:1px solid var(--divider);border-radius:4px;width:24px;height:24px;color:var(--t3);cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.act-modal-close:hover{background:var(--blue-pale);border-color:var(--blue);color:var(--blue);}
+.act-modal-body{padding:16px 18px;overflow-y:auto;}
+
+/* Switch App modal — one card per granted app, mirrors index.html's Switch
+   Company modal-choice shape. */
+.act-switch-app-list{display:flex;flex-direction:column;gap:8px;}
+.act-switch-app-choice{border:1px solid var(--divider);background:var(--white);border-radius:8px;padding:10px 14px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;}
+.act-switch-app-choice:hover{border-color:var(--purple-light);}
+.act-switch-app-choice.current{border-color:var(--purple);background:var(--purple-pale);cursor:default;}
+.act-switch-app-name{font-size:12px;font-weight:700;color:var(--t1);}
+.act-switch-app-check{color:var(--purple);font-size:15px;}
+
+/* Request Explorer — Prompt & Response Payload Viewer (v9.34). Icon lives
+   in the Prompt column's <td>; modal content renders into the shared
+   #act-modal-body above (actOpenPayloadModal and friends, cost-tower.js). */
+.act-payload-btn{width:22px;height:22px;border-radius:6px;border:1px solid var(--purple-light);background:var(--purple-pale);color:var(--purple);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;font-size:12px;line-height:1;padding:0;}
+.act-payload-btn:hover{background:var(--purple);color:var(--white);}
+.act-payload-block-label{font-size:9.5px;font-weight:800;color:var(--label);text-transform:uppercase;letter-spacing:.4px;margin:0 0 6px;display:flex;align-items:center;gap:8px;}
+.act-payload-block-badge{background:var(--card);color:var(--t3);border-radius:20px;padding:1px 8px;font-weight:700;text-transform:none;letter-spacing:0;font-size:9.5px;}
+.act-payload-box{background:var(--card);border:1px solid var(--divider);border-radius:8px;padding:11px 13px;font-family:monospace;font-size:10.5px;color:var(--t2);line-height:1.65;white-space:pre-wrap;word-break:break-word;margin:0 0 16px;max-height:260px;overflow-y:auto;}
+.act-payload-box:last-of-type{margin-bottom:0;}
+.act-payload-expired-note{font-size:10.5px;color:var(--t3);background:var(--card);border-radius:6px;padding:8px 10px;margin-bottom:14px;line-height:1.5;}
+.act-payload-id-note{font-size:9.5px;color:var(--t4);}
+/* Bleeds to the shared modal box's edges (its body has 16px 18px padding)
+   and sticks to the bottom of #act-modal-body's own scroll area — matching
+   the approved prototype's fixed footer, which this shared modal has no
+   separate slot for. position:sticky (not fixed/absolute, which would
+   escape the modal entirely) keeps it pinned within #act-modal-body even
+   when the Request/Response boxes above it are tall enough to scroll —
+   verified: with sticky, this row renders pinned at the bottom of the
+   visible body on first paint, not only after scrolling down to it.
+   Copy corrected to this spec's actual access tier (Admin and Power
+   User), not the prototype's stale "Admin only" text. */
+.act-payload-gate-strip{position:sticky;bottom:-16px;background:var(--purple-pale);border-top:1px solid var(--purple-light);margin:16px -18px -16px;padding:9px 18px;font-size:10px;color:var(--purple-deep);}
+
+/* ── AI Trace Layer — remaining widgets (v9.36): By Trace toggle,
+   By Conversation ranking, Trace Explorer card. Shared expandable
+   trace→span rows (actTraceGroupRowsHtml, cost-tower.js) power both
+   Request Explorer's By Trace toggle and the Trace Explorer card. ── */
+.act-view-toggle{display:inline-flex;gap:2px;background:var(--card);border:1px solid var(--divider);border-radius:8px;padding:3px;}
+.act-view-toggle-btn{font-family:var(--font);font-size:10.5px;font-weight:700;color:var(--t3);background:none;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;}
+.act-view-toggle-btn.active{background:var(--purple-pale);color:var(--purple);}
+.act-view-toggle-btn:hover:not(.active){color:var(--t2);}
+
+.act-trace-group-list{border:1px solid var(--divider);border-radius:10px;overflow:hidden;}
+.act-trace-group{border-bottom:1px solid var(--divider);}
+.act-trace-group:last-child{border-bottom:none;}
+.act-trace-row{display:flex;align-items:center;gap:10px;padding:9px 12px;cursor:pointer;font-size:11.5px;}
+.act-trace-row:hover{background:var(--row-hover);}
+.act-trace-toggle-icon{width:14px;color:var(--t4);font-size:10px;flex-shrink:0;}
+.act-trace-agent{font-weight:800;color:var(--t1);width:180px;flex-shrink:0;}
+.act-trace-meta{color:var(--t3);width:130px;flex-shrink:0;}
+.act-trace-cost{font-weight:800;color:var(--t1);width:80px;flex-shrink:0;}
+.act-trace-span-list{background:var(--card);padding:6px 12px 6px 40px;}
+.act-trace-span-row{display:flex;align-items:center;gap:10px;padding:5px 4px;font-size:10.5px;color:var(--t2);}
+.act-trace-span-seq{width:16px;height:16px;border-radius:50%;background:var(--white);border:1px solid var(--divider);display:flex;align-items:center;justify-content:center;font-size:8.5px;font-weight:800;color:var(--t3);flex-shrink:0;}
+.act-trace-span-type{width:74px;flex-shrink:0;font-weight:700;}
+.act-trace-span-type.llm{color:var(--blue);}
+.act-trace-span-type.tool{color:var(--purple);}
+.act-trace-span-dur{width:50px;color:var(--t4);flex-shrink:0;}
+.act-trace-span-cost{width:60px;flex-shrink:0;}
+.act-trace-span-status{margin-left:auto;display:flex;align-items:center;gap:8px;}
+.act-trace-span-payload-btn{width:20px;height:20px;font-size:11px;}
+
+/* Access-denied / loading states (bootstrap, not in the wireframe) */
+.act-gate-wrap{display:flex;align-items:center;justify-content:center;min-height:60vh;padding:24px;}
+.act-gate-card{max-width:420px;text-align:center;}
+.act-gate-title{font-size:15px;font-weight:800;color:var(--t1);margin-bottom:8px;}
+.act-gate-sub{font-size:12px;color:var(--t3);line-height:1.6;}
+
+/* ===== Outcome-Based Cost (v2, Screen 4) ===== */
+.act-how-to-read{display:flex;flex-wrap:wrap;gap:16px;background:var(--card);border:1px solid var(--divider);border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:11px;color:var(--t2);}
+.act-htr-item{display:flex;align-items:center;gap:6px;}
+.act-htr-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+.act-htr-dot.deliverable{background:var(--blue);}
+.act-htr-dot.yield{background:var(--purple);}
+.act-htr-dot.footprint{background:var(--amber);}
+.act-exec-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+.act-exec-card{border:1px solid var(--divider);border-radius:11px;background:var(--white);padding:15px;position:relative;overflow:hidden;}
+.act-exec-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--purple);}
+.act-exec-card.warn::before{background:var(--red);}
+.act-exec-kicker{font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--label);}
+.act-exec-name{font-size:14px;font-weight:800;color:var(--t1);margin-top:4px;}
+.act-exec-stat{font-size:20px;font-weight:800;margin-top:7px;}
+.act-exec-sub{font-size:10.5px;color:var(--t3);margin-top:3px;}
+.act-low-sample-badge{display:inline-flex;align-items:center;gap:4px;font-size:8.5px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;background:var(--card2);color:var(--t3);border-radius:20px;padding:2px 7px;margin-left:6px;}
+.act-kpi-strip-5{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;background:var(--divider);border:1px solid var(--divider);border-radius:10px;overflow:hidden;}
+.act-portfolio-controls{display:flex;align-items:center;gap:8px;}
+.act-outcome-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+.act-outcome-card{border:1px solid var(--divider);border-radius:11px;background:var(--white);padding:14px;cursor:pointer;transition:border-color .12s,box-shadow .12s;}
+.act-outcome-card:hover{border-color:var(--purple-light);box-shadow:0 2px 10px rgba(95,30,190,0.08);}
+.act-outcome-top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;}
+.act-outcome-type-tag{font-size:8.5px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;border-radius:20px;padding:3px 8px;}
+.act-outcome-type-tag.deliverable{background:var(--blue-pale);color:var(--blue);}
+.act-outcome-type-tag.yield{background:var(--purple-pale);color:var(--purple);}
+.act-outcome-name{font-size:13px;font-weight:800;color:var(--t1);margin-bottom:2px;}
+.act-outcome-primary-stat{font-size:19px;font-weight:800;color:var(--t1);margin-top:6px;}
+.act-outcome-primary-label{font-size:9px;color:var(--t4);text-transform:uppercase;letter-spacing:.4px;font-weight:700;}
+.act-outcome-secondary-row{display:flex;align-items:center;justify-content:space-between;margin-top:9px;padding-top:9px;border-top:1px solid var(--divider);font-size:10.5px;color:var(--t3);}
+.act-outcome-flag-row{margin-top:7px;font-size:10px;color:var(--amber);font-weight:700;display:flex;align-items:center;gap:5px;}
+.act-outcome-flag-row.none{color:var(--t4);font-weight:500;}
+.act-outcome-card-foot{display:flex;align-items:center;justify-content:space-between;margin-top:10px;}
+.act-outcome-view-link{font-size:10px;font-weight:800;color:var(--blue);}
+.act-modal-subtle{font-size:11px;color:var(--t3);margin-bottom:14px;line-height:1.5;}
+.act-formula-box{background:var(--card);border:1px dashed var(--divider);border-radius:9px;padding:11px 13px;font-size:11.5px;color:var(--t2);line-height:1.6;margin-bottom:14px;}
+.act-formula-box code{background:var(--white);border:1px solid var(--divider);border-radius:4px;padding:1px 5px;font-family:ui-monospace,monospace;font-size:10.5px;color:var(--purple);}
+.act-split-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;}
+.act-split-block{border:1px solid var(--divider);border-radius:9px;padding:12px 13px;}
+.act-split-label{font-size:9px;font-weight:800;color:var(--label);text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px;}
+.act-split-value{font-size:16px;font-weight:800;color:var(--t1);}
+.act-split-note{font-size:10px;color:var(--t4);margin-top:4px;line-height:1.4;}
+
+@media(max-width:980px){
+  .act-kpi-strip{grid-template-columns:repeat(2,1fr);}
+  .act-driver-grid,.act-opportunity-grid,.act-trust-mini{grid-template-columns:1fr;}
+  .act-planning-grid{grid-template-columns:1fr;}
+  .act-kpi-strip-5{grid-template-columns:repeat(2,1fr);}
+  .act-outcome-grid{grid-template-columns:1fr;}
+  .act-split-row{grid-template-columns:1fr;}
+  .act-exec-grid{grid-template-columns:1fr;}
+}

@@ -1,0 +1,25 @@
+/* VOICE INPUT (shared module, v9.24.02) — mic toggle + status label used by
+   every surface attached via scripts/voice-input.js's voiceButtonHtml().
+   Extracted from Requirement Agent's original .ra-voice-btn/.ra-voice-status
+   (styles/23-requirement-agent.css, v9.24) — same visual spec, renamed to a
+   surface-neutral prefix. .ra-chat-btn-group stays in 23-requirement-agent.css
+   — it's RA's own chat-input-row layout wrapper, not a voice-specific style.
+
+   Per-surface requirement: whatever element groups a surface's mic button
+   with its own send/regenerate button must be position:relative, since
+   .vi-status below is positioned absolute against it. */
+
+.vi-btn{width:32px;height:32px;border-radius:8px;background:var(--card);border:1px solid var(--divider);cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:var(--t3);padding:0;}
+.vi-btn:hover{border-color:var(--purple-light);color:var(--purple);}
+/* Connecting: .start() called but audio capture not yet confirmed (onstart
+   hasn't fired — can sit behind a first-use mic-permission prompt) —
+   distinct, non-pulsing active look. Listening: onstart confirmed capture
+   has begun — pulses, reusing glTypingPulse's existing keyframes
+   (22-guided-launch.css) rather than new ones. */
+.vi-btn.vi-btn-connecting{background:var(--purple-pale);border-color:var(--purple-light);color:var(--purple);}
+.vi-btn.vi-btn-listening{background:var(--purple);border-color:var(--purple);color:var(--white);animation:glTypingPulse 1.2s ease-in-out infinite;}
+/* Status label — sits in whatever gap already exists below the button
+   group on each surface (e.g. the same 6px band Requirement Agent's
+   upload-chip row already uses). Absolutely positioned so it adds zero
+   height to any panel when idle/empty. */
+.vi-status{position:absolute;top:100%;right:0;margin-top:6px;font-size:9px;color:var(--t3);white-space:nowrap;}

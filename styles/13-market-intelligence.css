@@ -26,6 +26,10 @@
   transition: width 0.22s cubic-bezier(0.4,0,0.2,1), min-width 0.22s cubic-bezier(0.4,0,0.2,1);
 }
 
+.mi-left.collapsed { width: 44px; min-width: 44px; }
+.mi-left.collapsed .form-scroll, .mi-left.collapsed .ph-text { display: none; }
+.mi-left.collapsed .collapse-btn { margin: auto; }
+
 /* Reuse ph, ph-title, ph-sub, form-scroll, gen-wrap, gen-btn from existing CSS */
 /* These overrides handle the mi-left context only */
 .mi-left .ph { padding: 10px 12px; flex-shrink: 0; }

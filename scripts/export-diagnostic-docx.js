@@ -66,7 +66,7 @@ function buildDiagnosticDocxHTML(la,productName){
   </style>
   </head><body>
   <h1>${productName} - Experiment Canvas</h1>
-  <p style="font-family:Arial;font-size:10pt;color:#aabbcc;margin:0 0 12pt;">${typeof getOrgName==='function'&&getOrgName()?getOrgName()+' · ':''}AI PM Toolkit</p>
+  <p style="font-family:Arial;font-size:10pt;color:#aabbcc;margin:0 0 12pt;">${typeof getOrgName==='function'&&getOrgName()?getOrgName()+' · ':''}${APP_NAME}</p>
 
   <h2>North Star Metric</h2>
   <p>${(gData&&gData.nsm&&gData.nsm.metric)||'Not available'}</p>

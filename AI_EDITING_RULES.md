@@ -1,4 +1,4 @@
-# AI Editing Rules — AI PM Toolkit
+# AI Editing Rules — Product Studio
 
 Read this file before making any change to any file in this project.
 
@@ -9,7 +9,7 @@ Read this file before making any change to any file in this project.
 ## Project structure
 
 ```
-index.html            app entry point — layout, tab buttons, script/CSS references
+index.html            app entry point — layout, tab buttons, script/CSS reference
 login.html             standalone login/signup page
 styles/                CSS files grouped by app area
 scripts/                JavaScript files grouped by feature
@@ -451,18 +451,19 @@ When adding a new tab, screen, or major feature:
 **This is the only packaging specification in this document. Follow it exactly for every build — there is no alternate tree, no alternate naming scheme.**
 
 ### ZIP NAMING CONVENTION
-- Feature release: `AIPM-Toolkit-vX.XX.zip` (e.g. `AIPM-Toolkit-v9.07.zip`)
-- Bug-fix patch on a feature release: `AIPM-Toolkit-vX.XX.XX.zip` (e.g. `AIPM-Toolkit-v9.06.03.zip`)
+- Feature release: `Product-Studio-vX.XX.zip` (e.g. `Product-Studio-v9.07.zip`)
+- Bug-fix patch on a feature release: `Product-Studio-vX.XX.XX.zip` (e.g. `Product-Studio-v9.06.03.zip`)
 - Version in the zip name MUST match `APP_VERSION` in `scripts/config.js` exactly.
 - Never use any other naming scheme (no `Product-Diagnostics-Toolkit-*`, `PGT-*`, `Product-Metrics-Teardown-App-*`, or similar — these are stale names from earlier project phases and must not be used).
 
 ### DIRECTORY STRUCTURE (authoritative — the only tree)
 ```
-AIPM-Toolkit-vX.XX(.XX)/
+Product-Studio-vX.XX(.XX)/
 ├── index.html
 ├── login.html
 ├── netlify.toml
 ├── favicon.ico                       (binary .ico, decoded from favicon-base64.txt — never include the .txt itself)
+├── ai-cost-tower.html                (v9.28, AI Control Tower — standalone admin-only page, opened via window.open())
 ├── AI_EDITING_RULES.md
 ├── CHANGELOG.md
 ├── DESIGN_SYSTEM.md
@@ -470,8 +471,12 @@ AIPM-Toolkit-vX.XX(.XX)/
 ├── PROJECT_MAP.md
 ├── package.json                      (Netlify Functions dependencies — root only, NOT copied from/to proxy/)
 │
+├── ai-cost-tower/                    (v9.32)
+│   └── api-docs.html                 (branded redirect to the correct proxy's /docs/ per environment — see the file's own header comment for why this is a client-side redirect, not a netlify.toml rule)
+│
 ├── scripts/                          (ALL frontend .js files, and ONLY frontend .js files)
 │   ├── config.js
+│   ├── cost-tower.js                 (v9.28, AI Control Tower — standalone, loaded only by ai-cost-tower.html)
 │   ├── state.js
 │   ├── utils.js
 │   ├── auth.js
@@ -481,7 +486,6 @@ AIPM-Toolkit-vX.XX(.XX)/
 │   ├── prompts.js
 │   ├── kpi-tree.js
 │   ├── capability-canvas.js
-│   ├── capability-drawer.js
 │   ├── feature-canvas.js
 │   ├── story-canvas-new.js
 │   ├── pi-planning.js
@@ -503,9 +507,14 @@ AIPM-Toolkit-vX.XX(.XX)/
 │   ├── export-pi-docx.js
 │   ├── export-diagnostic-docx.js
 │   ├── export-market-intel-docx.js
-│   └── local-server.js               (zero-dependency local static file server — distinct from proxy/server.js; NOT a duplicate, NOT the same file)
+│   ├── local-server.js               (zero-dependency local static file server — distinct from proxy/server.js; NOT a duplicate, NOT the same file)
+│   ├── guided-launch.js
+│   ├── outcome-pulse.js
+│   ├── readiness-canvas.js
+│   ├── requirement-agent.js
+│   └── voice-input.js
 │
-├── styles/                           (ALL .css files, 21 total, and ONLY .css files)
+├── styles/                           (ALL .css files, 26 total, and ONLY .css files)
 │   ├── 00-tokens.css
 │   ├── 01-base.css
 │   ├── 02-layout.css
@@ -513,7 +522,6 @@ AIPM-Toolkit-vX.XX(.XX)/
 │   ├── 04-left-panel.css
 │   ├── 05-kpi-tree.css
 │   ├── 06-metrics-definition.css
-│   ├── 07-capability-drawer.css
 │   ├── 08-feature-canvas.css
 │   ├── 09-modals-export.css
 │   ├── 10-capability-canvas.css
@@ -526,7 +534,13 @@ AIPM-Toolkit-vX.XX(.XX)/
 │   ├── 17-home.css
 │   ├── 18-auth.css
 │   ├── 19-prototype-canvas.css
-│   └── 20-team-management.css
+│   ├── 20-team-management.css
+│   ├── 21-outcome-pulse.css
+│   ├── 22-guided-launch.css
+│   ├── 23-requirement-agent.css
+│   ├── 24-readiness-canvas.css
+│   ├── 25-voice-input.css
+│   └── 26-cost-tower.css
 │
 ├── assets/
 │   ├── prototype-style-default.md    (fetched at runtime via 'assets/prototype-style-default.md' — must sit here, NOT inside templates/, NOT renamed)
@@ -537,10 +551,30 @@ AIPM-Toolkit-vX.XX(.XX)/
 ├── netlify/functions/
 │   └── anthropic-proxy.js            (production API route — lives ONLY here, never duplicated into scripts/)
 │
-└── proxy/                            (separate Render.com deployable — never merge into frontend root)
+└── proxy/                            (separate Render.com/Azure App Service deployable — never merge into frontend root)
     ├── server.js                     (Express proxy backend — lives ONLY here, never duplicated into scripts/; requires npm install, cannot run standalone like local-server.js)
+    ├── providerAdapters.js           (canonical adapter module, v9.14 — imported by BOTH proxy/server.js and netlify/functions/anthropic-proxy.js, never duplicated into either)
     ├── package.json                  (proxy-specific dependency list — see exact content below, never copy root package.json here)
-    └── README.md
+    ├── README.md
+    ├── routes/v1/                    (v9.32 — AI Cost Control Tower OpenAPI Ingestion Layer, consumer-tier /v1 API)
+    │   ├── usageEvents.js
+    │   ├── outcomes.js
+    │   ├── outcomeTypes.js
+    │   ├── companyApps.js
+    │   ├── traces.js                 (v9.33 — AI Trace Layer: POST/PATCH/GET /v1/traces, GET /v1/traces/{id}/spans)
+    │   └── toolSpans.js              (v9.33 — AI Trace Layer: POST /v1/tool-spans)
+    ├── middleware/
+    │   └── apiKeyAuth.js             (v9.32 — Bearer API key → (company_id, app_id), never a Supabase Auth session)
+    ├── lib/costTower/
+    │   ├── idempotency.js            (v9.32)
+    │   ├── unitsGenerated.js         (v9.32)
+    │   ├── idempotencyStrict.js      (v9.33 — AI Trace Layer: insertIdempotentStrict(), used by routes/v1/traces.js)
+    │   └── usageEventRpcParams.js    (v9.33 — AI Trace Layer: shared mt_ai_record_usage_event_with_span RPC parameter mapping, used by proxy/server.js and routes/v1/usageEvents.js)
+    └── openapi/                      (v9.32 — served at /docs, unauthenticated)
+        ├── openapi.yaml
+        ├── docs.html
+        ├── redoc.standalone.js       (vendored — cdn.jsdelivr.net is unreachable on this network, do not switch back to a CDN script tag)
+        └── redoc.standalone.js.LICENSE.txt
 ```
 
 ### CRITICAL: `proxy/package.json` content (must match exactly)
@@ -565,10 +599,13 @@ AIPM-Toolkit-vX.XX(.XX)/
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "eslint-plugin-security": "^4.0.1"
   }
 }
 ```
-Dependencies are extracted from `server.js`'s actual `require()` statements. Node engine constraint ensures Render.com compatibility.
+Dependencies are extracted from `server.js`'s actual `require()` statements. Node engine constraint ensures Render.com compatibility. `devDependencies` (`eslint-plugin-security`) is dev-time-only lint tooling — never affects the deployed runtime, but is part of the exact spec so a fresh package.json write doesn't silently drop it.
 
 ### FILES THAT MUST BE EXCLUDED FROM EVERY ZIP
 - ❌ `scripts/env.js` — contains live Supabase credentials (`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `PROXY_URL`). Never included. The user creates this file once locally and drops it into `scripts/` after unzipping — its absence from the zip is expected and correct, not a bug to fix.
@@ -590,6 +627,9 @@ Dependencies are extracted from `server.js`'s actual `require()` statements. Nod
 - [ ] `index.html`, `login.html`, `netlify.toml`, `favicon.ico` (real `.ico`, not `.txt`), `package.json` present
 - [ ] NO `.js` or `.css` files at root
 
+**`ai-cost-tower/`:**
+- [ ] `api-docs.html` present (v9.32 — without it, the avatar menu's "API Documentation" link 404s)
+
 **`scripts/`:**
 - [ ] Every `.js` file in `FILE_MANIFEST.txt`'s `scripts/` list is present, including `local-server.js`
 - [ ] `local-server.js` present and distinct from `proxy/server.js` — not merged, not omitted
@@ -598,7 +638,7 @@ Dependencies are extracted from `server.js`'s actual `require()` statements. Nod
 - [ ] NO `anthropic-proxy.js` present (that file belongs only in `netlify/functions/`)
 
 **`styles/`:**
-- [ ] 21 `.css` files present, matching `FILE_MANIFEST.txt`
+- [ ] 26 `.css` files present, matching `FILE_MANIFEST.txt`
 
 **`assets/`:**
 - [ ] `assets/prototype-style-default.md` present (NOT inside `templates/`)
@@ -609,8 +649,14 @@ Dependencies are extracted from `server.js`'s actual `require()` statements. Nod
 - [ ] `anthropic-proxy.js` present, and present ONLY here (not also in `scripts/`)
 
 **`proxy/`:**
-- [ ] `server.js`, `package.json` (proxy-specific content above), `README.md` all present
+- [ ] `server.js`, `providerAdapters.js`, `package.json` (proxy-specific content above), `README.md` all present
 - [ ] `proxy/server.js` present ONLY here (not also in `scripts/`)
+- [ ] `routes/v1/usageEvents.js`, `outcomes.js`, `outcomeTypes.js`, `companyApps.js` all present (v9.32 — AI Cost Control Tower OpenAPI Ingestion Layer; `proxy/server.js` `require()`s all four and fails to start if any is missing)
+- [ ] `routes/v1/traces.js`, `toolSpans.js` both present (v9.33 — AI Trace Layer; `proxy/server.js` `require()`s both and fails to start if either is missing)
+- [ ] `middleware/apiKeyAuth.js` present (v9.32)
+- [ ] `lib/costTower/idempotency.js`, `unitsGenerated.js` both present (v9.32)
+- [ ] `lib/costTower/idempotencyStrict.js`, `usageEventRpcParams.js` both present (v9.33 — AI Trace Layer; `routes/v1/traces.js` and `proxy/server.js`/`routes/v1/usageEvents.js` respectively fail to start without them)
+- [ ] `openapi/openapi.yaml`, `docs.html`, `redoc.standalone.js`, `redoc.standalone.js.LICENSE.txt` all present (v9.32 — `/docs` serves a blank page with no error if `redoc.standalone.js` is missing, since it's a vendored file, not CDN-loaded)
 
 **Exclusions — confirm none of these exist anywhere in the tree:**
 - [ ] NO `env.js`
@@ -619,7 +665,7 @@ Dependencies are extracted from `server.js`'s actual `require()` statements. Nod
 - [ ] NO `favicon-base64.txt`
 
 **ZIP file:**
-- [ ] Filename matches `AIPM-Toolkit-vX.XX.zip` or `AIPM-Toolkit-vX.XX.XX.zip` exactly
+- [ ] Filename matches `Product-Studio-vX.XX.zip` or `Product-Studio-vX.XX.XX.zip` exactly
 - [ ] File placed in `/mnt/user-data/outputs/`
 
 **If ANY check fails: do not zip. Fix the issue, re-run the full checklist, only zip when everything passes.**
@@ -747,7 +793,7 @@ if(typeof newScRender==='function'){
 - Do not move the tab row inside `.right` — it must stay in `.app-shell`.
 - Do not ask the user to identify source files by name. Use `PROJECT_MAP.md`.
 - Do not hallucinate file counts. Read `FILE_MANIFEST.txt` for the current inventory.
-- Do not deviate from the `AIPM-Toolkit-vX.XX` / `AIPM-Toolkit-vX.XX.XX` naming convention.
+- Do not deviate from the `Product-Studio-vX.XX` / `Product-Studio-vX.XX.XX` naming convention.
 - Do not include root-level `.js` or `.css` files in the zip.
 - Do not create duplicate files in multiple folders — one canonical location per file. In particular: `anthropic-proxy.js` lives only in `netlify/functions/`; `server.js` lives only in `proxy/`; neither is ever also placed in `scripts/`.
 - Do not copy root `package.json` to `proxy/` — use the proxy-specific `package.json` content specified above.

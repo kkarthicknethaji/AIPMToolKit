@@ -69,7 +69,7 @@
 .sh-title{font-size:12px;font-weight:700;color:#fff;margin-top:2px;}
 .sh-desc{font-size:9px;color:rgba(255,255,255,0.75);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.3;}
 .sc{min-width:280px;flex-grow:1;flex-shrink:0;flex-basis:0;scroll-snap-align:start;border:1px solid var(--divider);border-radius:8px;overflow:hidden;}
-.l1{border:1px solid var(--divider);border-radius:6px;cursor:pointer;background:#fff;transition:border-color 0.13s,box-shadow 0.13s;margin-top:8px;padding-bottom:4px;}
+.l1{position:relative;border:1px solid var(--divider);border-radius:6px;cursor:pointer;background:#fff;transition:border-color 0.13s,box-shadow 0.13s;margin-top:8px;padding-bottom:4px;}
 .l1:hover{border-color:var(--blue);box-shadow:0 2px 8px rgba(15,95,220,0.08);}
 .l1.l1-flat{cursor:default;padding-bottom:8px;}
 .l1.l1-flat:hover{border-color:var(--divider);box-shadow:none;}
@@ -181,10 +181,15 @@ table.dt th:nth-child(7){width:17%;}
 /* Refine expand area */
 .diag-refine-expand{padding:10px 20px 8px;border-top:1px solid var(--blue-mid);background:#F8FAFF;}
 .diag-refine-lbl{font-size:9px;font-weight:700;color:var(--blue);letter-spacing:0.6px;text-transform:uppercase;margin-bottom:5px;}
-.diag-refine-row{display:flex;gap:8px;align-items:flex-end;}
+.diag-refine-row{display:flex;gap:10px;align-items:flex-end;}
 .diag-refine-txt{font-family:var(--font)!important;font-size:11px!important;color:var(--t1)!important;flex:1;background:#fff;border:1px solid var(--blue-mid);border-left:3px solid var(--blue);border-radius:5px;padding:6px 9px;outline:none;resize:none;min-height:40px;line-height:1.4;transition:border-color 0.15s;}
 .diag-refine-txt:focus{border-color:var(--blue);}
 .diag-refine-txt::placeholder{color:var(--label);font-size:10px!important;}
+/* Mic (shared voice-input.js, styles/25-voice-input.css) grouped tightly
+   with the refine/send button (4px internal gap); the row's own 10px gap
+   (above) is the looser separation between the textarea and this group.
+   position:relative anchors .vi-status's absolute positioning. */
+.diag-refine-btn-group{display:flex;gap:4px;flex-shrink:0;position:relative;}
 /* Inline refine pattern — single icon-only submit button, matches .sc-refine-send */
 .diag-refine-send{background:var(--purple);border:none;border-radius:6px;width:34px;height:34px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#fff;flex-shrink:0;transition:background 0.12s;}
 .diag-refine-send:hover{background:var(--purple-deep);}
@@ -252,6 +257,25 @@ table.dt th:nth-child(7){width:17%;}
 .stage-modal-save:disabled{opacity:0.4;cursor:not-allowed;}
 .stage-modal-save.destructive{background:var(--red);}
 .stage-modal-save.destructive:hover:not(:disabled){background:#8a2020;}
+
+/* Base trigger pill — SHARED, cross-feature component; do not delete
+   alongside any single feature's own CSS. Restored v9.25.03 after being
+   deleted along with styles/07-capability-drawer.css; confirmed live
+   consumers as of v9.25.04 (re-verified via full-repo grep, not memory):
+   scripts/kpi-tree.js and scripts/diagnostic-view.js (render the
+   class="cap-trigger cap-trigger-ev/-dd [cap-trigger-sm/-xs]" buttons
+   themselves) AND scripts/left-panel.js (applyFeats()'s
+   querySelectorAll('.cap-trigger') reset) — all unrelated to the
+   (now-deleted) capability drawer feature this file also happens to own. */
+.cap-trigger{display:none;font-family:var(--font)!important;font-size:9px!important;font-weight:700;color:var(--purple);background:var(--card-purple);border:1px solid #CECBF6;border-radius:10px;padding:2px 9px;cursor:pointer;transition:all 0.12s;white-space:nowrap;margin:0 8px 6px auto;}
+.l1-trigger-row .cap-trigger{margin:0;width:fit-content;display:none;}
+.cap-trigger:hover{background:var(--purple);color:#fff;}
+.l1:hover .cap-trigger{display:flex;width:fit-content;}
+.l1:hover .l1-trigger-row{display:flex;}
+.l2:hover .cap-trigger{display:flex;width:fit-content;}
+.l3:hover .cap-trigger,.l3.has-l4:hover .cap-trigger{display:flex;width:fit-content;}
+.cap-trigger-sm{font-size:8px!important;padding:1px 7px;margin:4px 0 2px auto;}
+.cap-trigger-xs{font-size:8px!important;padding:1px 6px;margin:3px 0 0 auto;}
 
 /* Evidence CTA trigger — same visual weight as Dictionary */
 .cap-trigger-ev{background:var(--card-purple);color:var(--purple);border-color:#CECBF6;}

@@ -1,14 +1,32 @@
-// ── Shared API key format validator ──
-// Single source of truth for "is this a valid-looking Anthropic key" — used
-// by checkKey() (live, on every keystroke) and by the Settings Save & Exit
-// handler (settings-page.js), so the two can never independently drift the
-// way they had before this fix (Save previously had NO validation at all,
-// blindly persisting whatever was in the field — including browser-
-// autofilled garbage, confirmed via screen recording to render into this
-// field immediately on page load, independent of any user interaction).
-function isValidApiKeyFormat(k){
+// ── Shared API key format validator (v9.14: provider-aware) ──
+// Single source of truth for "is this a valid-looking key for the active
+// provider" — used by checkKey() (live, on every keystroke) and by the
+// Settings Save & Exit handler (settings-page.js), so the two can never
+// independently drift the way they had before this fix (Save previously had
+// NO validation at all, blindly persisting whatever was in the field —
+// including browser-autofilled garbage, confirmed via screen recording to
+// render into this field immediately on page load, independent of any user
+// interaction).
+//
+// Provider key formats are not a stable contract (OpenAI and Google both
+// document evolving key schemes/types) — this is a soft, client-side hint
+// only, never the authoritative check; actual key validity is only ever
+// confirmed by the provider itself on first real call. A null pattern below
+// means "not yet verified against live provider docs" (see the spec's
+// Section 7) — any non-empty value is accepted as tentatively valid rather
+// than wrongly flagged Invalid until a real pattern lands.
+const _PROVIDER_KEY_PATTERNS = {
+  anthropic: /^sk-ant|^sk-/,
+  openai: null, // [VERIFY_OPENAI_KEY_PREFIX_PATTERN] — unresolved, see spec Section 7
+  gemini: null  // [VERIFY_GEMINI_KEY_PREFIX_PATTERN] — unresolved, not covered by this pass's direct-doc-read either
+};
+function isValidApiKeyFormat(k, provider){
   k=(k||'').trim();
-  return k.startsWith('sk-ant')||k.startsWith('sk-');
+  if(!k) return false;
+  provider = provider || (typeof appSettings!=='undefined' && appSettings.provider) || 'anthropic';
+  const pattern = _PROVIDER_KEY_PATTERNS.hasOwnProperty(provider) ? _PROVIDER_KEY_PATTERNS[provider] : _PROVIDER_KEY_PATTERNS.anthropic;
+  if(pattern === null) return true; // no verified pattern yet — accept, don't false-flag a real key as invalid
+  return pattern.test(k);
 }
 function checkKey(){
   var keyEl=document.getElementById('api-key');if(!keyEl)return;

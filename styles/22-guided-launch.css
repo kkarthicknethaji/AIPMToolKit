@@ -1,0 +1,140 @@
+/* Guided Launch (gl) — v9.15, fixes v9.15.01
+   Three-panel layout: .gl-left (300px, product context) / .gl-center (chat)
+   / .gl-md-panel (flex-expand, 440px). Tab content toggled via .on, per this
+   project's tab-content convention (see DESIGN_SYSTEM.md §6). */
+
+.gl-tab{display:none;flex-direction:row;flex:1;overflow:hidden;}
+.gl-tab.on{display:flex;}
+
+/* ── Left panel — #gl-left carries the real global .left class (see
+   index.html's #left-panel for the pattern this was copied from) so it
+   inherits width/collapse mechanics for free. Body content is the SAME
+   _mmBuildSessionSummaryHtml() markup DM's own left panel renders
+   (v9.15.02, Item 2), inside DM's real .form-scroll container (see
+   04-left-panel.css) — mmRenderSessionPanel() overrides only that
+   element's padding inline, so it still inherits display:flex/gap from the
+   class. v9.15.04, Item 3: .gl-left-body was missing that same flex/gap,
+   which is what actually produces the spacing between rows — matched here
+   exactly rather than just the padding value. ── */
+.gl-left-body{flex:1;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:12px;}
+.gl-left-body::-webkit-scrollbar{width:3px;}
+.gl-left-body::-webkit-scrollbar-thumb{background:var(--divider);border-radius:2px;}
+.gl-left.collapsed .gl-left-body{display:none;}
+
+/* ── Center: chat panel ──
+   Header padding matches .ph's real 10px 12px exactly (v9.15.01, Items
+   16-17) — was already correct here; the left panel (now real .ph) and the
+   MD panel header below are what needed to change to match this one. ── */
+.gl-center{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;background:#fff;}
+.gl-chat-hdr{padding:10px 12px;border-bottom:1px solid var(--divider);display:flex;align-items:center;justify-content:space-between;flex-shrink:0;background:#fff;}
+.gl-chat-hdr-eyebrow{font-size:10px;font-weight:700;color:var(--blue);letter-spacing:1px;text-transform:uppercase;}
+.gl-chat-hdr-title{font-size:13px;font-weight:700;color:var(--t1);margin-top:2px;}
+
+.gl-chat-body{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:14px;background:#fff;}
+.gl-chat-body::-webkit-scrollbar{width:3px;}
+.gl-chat-body::-webkit-scrollbar-thumb{background:var(--divider);border-radius:2px;}
+.gl-msg-row{display:flex;gap:9px;max-width:78%;}
+.gl-msg-row.user{align-self:flex-end;flex-direction:row-reverse;}
+.gl-msg-row.agent{align-self:flex-start;}
+.gl-avatar{width:26px;height:26px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff;}
+.gl-avatar.agent-av{background:var(--purple);}
+.gl-avatar.user-av{background:var(--blue);}
+.gl-bubble{padding:10px 13px;border-radius:10px;font-size:12.5px;line-height:1.55;}
+/* Item 5 (v9.15.02): reverts v9.15.01's Item 9 swap, which overcorrected —
+   agent back to the original gray/card treatment, user to blue (white
+   text). Avatars are unchanged (agent stays purple-filled, user stays
+   blue-filled) — this is bubble color only. */
+.gl-msg-row.agent .gl-bubble{background:var(--card);color:var(--t1);border:1px solid var(--divider);}
+.gl-msg-row.user .gl-bubble{background:var(--blue);color:#fff;}
+
+/* Items 5+7 (v9.15.01) — self-contained typing indicator, no borrowed
+   classes from other canvases (cc-spin-sm was never defined in this file). */
+.gl-typing-bubble{display:flex;align-items:center;gap:8px;}
+.gl-typing-dots{display:flex;gap:3px;}
+.gl-typing-dots span{width:5px;height:5px;border-radius:50%;background:var(--blue);animation:glTypingPulse 1.2s ease-in-out infinite;}
+.gl-typing-dots span:nth-child(2){animation-delay:0.2s;}
+.gl-typing-dots span:nth-child(3){animation-delay:0.4s;}
+@keyframes glTypingPulse{0%,80%,100%{opacity:0.25;transform:scale(0.85);}40%{opacity:1;transform:scale(1);}}
+
+.gl-chat-input-wrap{border-top:1px solid var(--divider);padding:10px 14px;flex-shrink:0;background:#fff;}
+.gl-chat-input-row{display:flex;gap:8px;align-items:flex-end;}
+.gl-chat-input{flex:1;border:1px solid var(--divider);border-radius:8px;padding:9px 12px;font-size:12px;font-family:var(--font);resize:none;min-height:38px;outline:none;color:var(--t1);}
+.gl-chat-input:focus{border-color:var(--purple);box-shadow:0 0 0 2px rgba(95,30,190,0.07);}
+.gl-chat-input:disabled{background:var(--card);color:var(--t3);}
+.gl-chat-send{background:var(--purple);color:#fff;border:none;border-radius:8px;width:38px;height:38px;flex-shrink:0;display:flex;align-items:center;justify-content:center;cursor:pointer;}
+.gl-chat-send:hover{background:var(--purple-deep);}
+.gl-chat-send:disabled{background:var(--label);cursor:not-allowed;}
+.gl-upload-chip{display:inline-flex;align-items:center;gap:5px;font-size:10px;color:var(--t3);margin-top:6px;cursor:pointer;}
+.gl-upload-chip svg{stroke:var(--t3);}
+/* Item 10 (v9.15.01) — visual/interactive disabled state once finalized;
+   glHandleUpload() already no-ops post-finalize, this makes the chip look
+   the part too, per the app-wide disabled convention. */
+.gl-upload-chip-disabled{cursor:not-allowed;opacity:0.5;}
+.gl-upload-chip-disabled span{text-decoration:none!important;}
+
+/* ── Right panel: MD viewer — flex-expand per DESIGN_SYSTEM.md §5 ── */
+.gl-md-panel{width:0;min-width:0;flex-shrink:0;border-left:0 solid var(--divider);background:#fff;display:flex;flex-direction:column;overflow:hidden;
+  transition:width 0.28s cubic-bezier(0.4,0,0.2,1),min-width 0.28s cubic-bezier(0.4,0,0.2,1),border-left-width 0.28s;}
+.gl-md-panel.open{width:440px;min-width:440px;border-left-width:1px;}
+
+/* Item 16-17 (v9.15.01): padding matched to .ph's real 10px 12px, same as
+   .gl-chat-hdr above — was 12px 14px 10px, a 2px mismatch that alone
+   explained part of the previous header-height drift. Verify computed
+   height in devtools after this change, per this project's own
+   measure-before-modifying rule — the left/chat/MD headers now share
+   identical padding, but their internal text-line structures still differ
+   slightly (left: title+sub; chat/MD: eyebrow+title), so confirm rather
+   than assume pixel parity. */
+.gl-md-hdr{padding:10px 12px;border-bottom:1px solid var(--divider);background:var(--card);display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
+/* Item 13 (v9.15.01): eyebrow color -> purple, matching Capability Canvas's
+   "CAPABILITY" eyebrow reference. Was var(--label) (gray). */
+.gl-md-hdr-eyebrow{font-size:9px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;color:var(--purple);}
+.gl-md-hdr-title{font-size:13px;font-weight:700;color:var(--t1);margin-top:1px;}
+.gl-md-hdr-actions{display:flex;gap:6px;align-items:center;}
+.gl-export-btn{display:flex;align-items:center;gap:5px;background:#fff;border:1px solid var(--divider);border-radius:5px;padding:5px 9px;font-size:10.5px;font-weight:600;color:var(--t2);cursor:pointer;font-family:var(--font);}
+.gl-export-btn svg{stroke:currentColor;}
+.gl-export-btn:hover{border-color:var(--blue);color:var(--blue);background:var(--blue-pale);}
+
+.gl-md-body{flex:1;overflow-y:auto;padding:12px 14px;font-size:12px;line-height:1.65;color:var(--t2);}
+.gl-md-body::-webkit-scrollbar{width:3px;}
+.gl-md-body::-webkit-scrollbar-thumb{background:var(--divider);border-radius:2px;}
+.gl-md-body h1{font-size:16px;font-weight:700;color:var(--t1);margin:0 0 10px 0;}
+.gl-md-body h2{font-size:13px;font-weight:700;color:var(--purple);margin:18px 0 6px 0;}
+.gl-md-body h3{font-size:11.5px;font-weight:700;color:var(--t1);margin:12px 0 4px 0;}
+.gl-md-body p{margin:0 0 8px 0;}
+.gl-md-body ul{margin:0 0 8px 0;padding-left:18px;}
+.gl-md-body li{margin-bottom:3px;}
+.gl-status-badge{display:inline-block;font-size:9px;font-weight:700;padding:2px 8px;border-radius:4px;letter-spacing:0.3px;text-transform:uppercase;margin-bottom:10px;}
+.gl-status-drafting{background:var(--blue-pale);color:var(--blue);}
+.gl-status-final{background:var(--green-pale);color:var(--green);}
+
+@keyframes glFlashHighlight{0%{background:var(--amber-pale);}100%{background:transparent;}}
+.gl-flash{animation:glFlashHighlight 1.8s ease-out;border-radius:5px;}
+
+/* Item 16-17: footer padding matched to .gl-chat-input-wrap's 10px 14px
+   above (was 12px 16px there, 10px 14px here — now identical). */
+.gl-md-footer{padding:10px 14px;border-top:1px solid var(--divider);background:var(--card);flex-shrink:0;display:flex;flex-direction:column;gap:6px;}
+.gl-finalize-btn{width:100%;background:var(--purple);color:#fff;border:none;border-radius:6px;padding:11px 16px;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--font);display:flex;align-items:center;justify-content:center;gap:7px;transition:background 0.12s;}
+.gl-finalize-btn svg{stroke:#fff;}
+.gl-finalize-btn:hover{background:var(--purple-deep);}
+.gl-finalize-btn:disabled{opacity:0.5;cursor:not-allowed;}
+.gl-footer-note{font-size:10px;color:var(--t3);text-align:center;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+/* Item 6 (v9.15.03) — link-style, matching the app's small-secondary-action
+   convention; hidden by default (display:none inline on the element itself),
+   toggled by glUpdateFooterState(). */
+.gl-continue-dm-btn{width:100%;background:none;border:none;padding:2px;font-size:10px;font-weight:700;color:var(--purple);cursor:pointer;font-family:var(--font);}
+.gl-continue-dm-btn:hover{color:var(--purple-deep);text-decoration:underline;}
+
+/* Collapsed rail handle */
+.gl-md-collapsed-rail{width:26px;min-width:26px;background:var(--card);border-left:1px solid var(--divider);display:none;flex-direction:column;align-items:center;padding-top:14px;flex-shrink:0;cursor:pointer;}
+.gl-md-collapsed-rail.show{display:flex;}
+.gl-md-collapsed-rail:hover{background:var(--purple-pale);}
+.gl-md-collapsed-rail svg{stroke:var(--t3);}
+.gl-md-collapsed-rail:hover svg{stroke:var(--purple);}
+.gl-md-collapsed-label{font-size:8px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--t3);writing-mode:vertical-rl;margin-top:8px;}
+
+/* ── Home footer — Quick / Guided Launch CTA row (replaces single .home-gen-btn) ── */
+#home-tab .home-launch-cta-row{display:flex;gap:8px;}
+#home-tab .home-launch-cta-row .home-gen-btn{width:auto;flex:1;font-size:11.5px!important;padding:11px 10px;white-space:nowrap;}
+#home-tab .home-gen-btn-quick{background:var(--blue);}
+#home-tab .home-gen-btn-quick:hover{background:#0C4FB8;}

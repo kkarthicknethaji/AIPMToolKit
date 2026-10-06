@@ -1,0 +1,268 @@
+/* ══════════════════════════════════════════════════════════════════════
+   ADOPTION READINESS — styles/24-readiness-canvas.css (v9.21)
+   Owns: #rc-canvas full-frame container, the 6-section screen flow, the
+   lineage drawer, and the Outcome Pulse By Stage/By Release toggle
+   (op-group-toggle — new component introduced by this same build, per
+   ADOPTION_READINESS_SPEC.md §3.2, even though its markup lives in
+   outcome-pulse.js).
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* .arp-tab follows the exact same tab-content container convention as
+   every other tab (.pi-tab/.on, .sc-tab/.on, .op-tab/.on, .ra-tab/.on —
+   see styles/14-pi-planning.css etc.), toggled by switchTab() in api.js.
+   position:relative so the lineage drawer (position:absolute) is
+   contained to this element rather than the whole app-shell. */
+.arp-tab{
+  display:none;
+  position:relative;
+  flex:1;
+  min-height:0;
+  background:#fff;
+  flex-direction:column;
+  overflow:hidden;
+}
+.arp-tab.on{display:flex;}
+
+.rc-stale-banner{
+  display:flex;align-items:center;gap:8px;
+  padding:8px 20px;font-size:11px;flex-shrink:0;
+  background:var(--amber-pale);color:#7A5000;
+}
+
+/* ── Top-right action row (status pill, reopen link, export) — appears in
+   the same header row as each section's own title, on every section 1-6,
+   since the finalized/read-only state applies across the whole plan
+   while it's finalized (consolidates what used to be a separate
+   breadcrumb-style canvas header, now redundant with the left panel's
+   Release Plan card). ── */
+.rc-top-actions{display:flex;align-items:center;gap:8px;flex-shrink:0;}
+.rc-status-pill{
+  display:inline-flex;align-items:center;gap:4px;
+  font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px;
+  padding:2px 8px;border-radius:10px;vertical-align:middle;
+  background:var(--divider);color:var(--t3);
+}
+.rc-status-pill-finalized{background:var(--purple-pale);color:var(--purple-deep);}
+.rc-reopen-link{
+  background:none;border:none;color:var(--purple);
+  font-size:10.5px;font-weight:700;cursor:pointer;font-family:var(--font);
+  padding:0;text-decoration:underline;vertical-align:middle;
+}
+.rc-reopen-link:hover{color:var(--purple-deep);}
+
+.rc-body{display:flex;flex:1;min-height:0;overflow:hidden;}
+
+/* ── Left panel (F2/F3) — 300px to match the app's standard left panel
+   (.left in styles/02-layout.css), not the standalone prototype's
+   arbitrary 300px-that-happened-to-differ; consistency with the live app
+   is the goal. ── */
+.rc-left-panel{width:300px;min-width:300px;background:var(--card);border-right:1px solid var(--divider);display:flex;flex-direction:column;overflow:hidden;transition:width 0.22s cubic-bezier(0.4,0,0.2,1),min-width 0.22s cubic-bezier(0.4,0,0.2,1);}
+.rc-left-panel.collapsed{width:44px;min-width:44px;}
+.rc-left-panel.collapsed .rc-lp-scroll{display:none;}
+.rc-left-panel.collapsed .rc-lp-hdr{padding:14px 0;justify-content:center;}
+.rc-left-panel.collapsed .rc-lp-hdr-text{display:none;}
+.rc-lp-hdr{display:flex;align-items:flex-start;justify-content:space-between;gap:6px;padding:14px 14px 10px;border-bottom:1px solid var(--divider);}
+.rc-lp-hdr-text{flex:1;min-width:0;}
+.rc-lp-eyebrow{font-size:9px;font-weight:700;color:var(--purple);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px;}
+.rc-lp-plan-name{font-size:12px;font-weight:700;color:var(--t1);}
+.rc-lp-collapse-btn{background:none;border:none;cursor:pointer;padding:3px;color:var(--t3);flex-shrink:0;}
+.rc-lp-collapse-btn:hover{color:var(--t1);}
+.rc-lp-scroll{flex:1;overflow-y:auto;padding:12px 14px;}
+.rc-lp-card{background:#fff;border:1px solid var(--divider);border-radius:8px;padding:10px 12px;margin-bottom:12px;}
+.rc-lp-card-title{font-size:9.5px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:5px;}
+.rc-lp-card-name{font-size:12px;font-weight:700;color:var(--t1);margin-bottom:3px;}
+.rc-lp-card-meta{font-size:10.5px;color:var(--t3);line-height:1.5;}
+.rc-lp-source-row{font-size:11px;color:var(--t2);padding:3px 0;border-bottom:1px solid var(--divider);}
+.rc-lp-source-row:last-of-type{border-bottom:none;}
+.rc-lp-lineage-link{font-size:11px;color:var(--purple);cursor:pointer;margin-top:8px;font-weight:600;}
+.rc-step-nav{display:flex;flex-direction:column;gap:2px;}
+.rc-step-item{display:flex;align-items:center;gap:9px;padding:8px 6px;border-radius:6px;cursor:pointer;font-size:11.5px;color:var(--t2);}
+.rc-step-item:hover{background:#fff;}
+.rc-step-circle{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;background:var(--divider);color:var(--t3);}
+.rc-step-active{font-weight:700;color:var(--t1);}
+.rc-step-active .rc-step-circle{background:var(--purple);color:#fff;}
+.rc-step-done .rc-step-circle{background:var(--green-pale);color:var(--green);}
+.rc-step-warn .rc-step-circle{background:var(--amber-pale);color:var(--amber);}
+
+.rc-nav{
+  width:220px;flex-shrink:0;border-right:1px solid var(--divider);
+  padding:12px 0;overflow-y:auto;background:var(--card);
+}
+.rc-nav-item{
+  padding:9px 18px;font-size:11.5px;color:var(--t2);cursor:pointer;
+  border-left:2px solid transparent;
+}
+.rc-nav-item:hover{background:#fff;}
+.rc-nav-item.active{color:var(--purple);font-weight:700;border-left-color:var(--purple);background:#fff;}
+
+.rc-main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden;}
+.rc-content{flex:1;min-width:0;overflow-y:auto;padding:20px 28px;}
+.rc-main-footer{flex-shrink:0;background:var(--card);border-top:1px solid var(--divider);padding:10px 28px;display:flex;justify-content:flex-end;gap:8px;}
+
+.rc-section-title{font-size:14px;font-weight:700;color:var(--t1);margin-bottom:14px;}
+.rc-section-title-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;}
+
+.rc-card{
+  background:var(--card);border:1px solid var(--divider);border-radius:8px;
+  padding:14px 16px;margin-bottom:14px;
+}
+.rc-field-label{font-size:10px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:0.4px;margin-top:14px;margin-bottom:5px;}
+.rc-field-label:first-child{margin-top:0;}
+.rc-readonly{font-size:12px;color:var(--t1);}
+.rc-readonly-block{font-size:11.5px;color:var(--t2);line-height:1.5;margin-bottom:10px;}
+.rc-required{color:var(--red);}
+.rc-empty{font-size:11px;color:var(--t3);padding:16px 0;text-align:center;}
+
+/* ── Hover-to-edit pattern — standardized on sc-card-pencil's pure-CSS
+   approach exactly (opacity 0->1 on wrap hover), per build correction §3. ── */
+.ra-field-wrap{position:relative;display:flex;align-items:flex-start;gap:6px;}
+.ra-field-text{flex:1;min-width:0;font-size:12px;color:var(--t1);line-height:1.5;white-space:pre-wrap;}
+.ra-field-empty{color:var(--t4);font-style:italic;}
+.ra-field-pencil{
+  background:none;border:none;cursor:pointer;padding:2px;color:var(--label);
+  opacity:0;transition:opacity 0.12s;flex-shrink:0;border-radius:3px;
+  display:flex;align-items:center;justify-content:center;width:16px;height:16px;
+}
+.ra-field-wrap:hover .ra-field-pencil{opacity:1;}
+.ra-field-pencil:hover{color:var(--purple);background:var(--purple-pale);}
+.ra-field-input{
+  width:100%;font-family:var(--font);font-size:12px;color:var(--t1);
+  border:1px solid var(--purple);border-radius:5px;padding:6px 8px;
+  resize:vertical;min-height:32px;
+}
+
+.rc-metrics-table{width:100%;border-collapse:collapse;font-size:11.5px;}
+.rc-metrics-table th{text-align:left;font-size:9.5px;color:var(--t3);text-transform:uppercase;padding:4px 8px;border-bottom:1px solid var(--divider);}
+.rc-metrics-table td{padding:5px 8px;border-bottom:1px solid var(--divider);}
+.rc-row-del{background:none;border:none;color:var(--t4);cursor:pointer;padding:2px;}
+.rc-row-del:hover{color:var(--red);}
+.rc-add-link{font-size:11px;color:var(--purple);cursor:pointer;margin-top:8px;display:inline-flex;align-items:center;gap:4px;}
+
+.rc-scope-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
+.rc-select{
+  font-family:var(--font);font-size:12px;padding:6px 8px;border:1px solid var(--divider);
+  border-radius:5px;color:var(--t1);background:#fff;
+}
+
+/* ── Section 3 — Impact & Affected Groups ──
+   Grid stretches every cell to the tallest card in its row (default grid
+   align-items:stretch), and each card is a column flexbox with its action
+   row pinned to the bottom via margin-top:auto — so two cards of very
+   different text length in the same row still end at the same y-position
+   and their Remove/Confirm buttons line up, instead of each card just
+   being as tall as its own content (Nielsen's consistency & standards). ── */
+.rc-groups-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;}
+.rc-group-card{background:var(--card);border:1px solid var(--divider);border-radius:8px;padding:14px 16px;display:flex;flex-direction:column;}
+.rc-group-hdr{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;}
+.rc-group-hdr-right{display:flex;align-items:center;gap:6px;flex-shrink:0;}
+.rc-group-name{font-size:12.5px;font-weight:700;color:var(--t1);}
+.rc-group-card-icons{display:flex;align-items:center;gap:2px;}
+.rc-group-icon-btn{background:none;border:none;color:var(--t4);cursor:pointer;padding:3px;display:flex;align-items:center;border-radius:4px;font-size:12px;}
+.rc-group-icon-btn:hover{color:var(--purple);background:var(--purple-pale);}
+.rc-ai-badge{font-size:9px;font-weight:700;color:var(--amber);background:var(--amber-pale);padding:2px 7px;border-radius:4px;letter-spacing:0.3px;}
+.rc-ai-pending-note{display:flex;align-items:center;gap:6px;font-size:11px;font-style:italic;color:var(--purple);margin-bottom:10px;}
+/* Loader-then-reveal (live PM feedback fix) — full-section replacement
+   shown while an AI enhance call is pending, purple-pale bg / purple-deep
+   text / static sparkles icon (the former canvas-level .rc-ai-enhance-banner
+   used this same look; that banner was removed as redundant once Sections
+   1/3/4 got their own loaders in the same spot the content appears).
+   .rc-ai-failed-note is the "AI call failed, deterministic content below
+   is the fallback" note — same shape as .rc-ai-pending-note, red instead
+   of purple, reusing the #F7E4E4 red-pale already established by
+   .rc-rec-hold below for this file's failure tone. */
+.rc-ai-loading{display:flex;align-items:center;justify-content:center;gap:8px;padding:40px 20px;background:var(--purple-pale);color:var(--purple-deep);border-radius:8px;}
+.rc-ai-loading i{font-size:16px;}
+.rc-ai-loading-title{font-size:13px;}
+.rc-ai-failed-note{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--red);background:#F7E4E4;border-radius:6px;padding:6px 10px;margin-bottom:10px;}
+.rc-ai-failed-note-cell{padding:8px !important;border-bottom:none !important;background:#F7E4E4;}
+.rc-ai-failed-note-cell .rc-ai-failed-note{margin-bottom:0;background:none;padding:0;}
+.rc-behavior-draft{width:100%;border:1px dashed var(--amber);border-radius:5px;padding:8px;font-family:var(--font);font-size:12px;min-height:50px;}
+.rc-group-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:auto;padding-top:10px;}
+/* Add-group tile — sits as a regular cell in the grid (not a separate
+   full-width strip below it), sized/styled like the real cards it sits
+   next to so it reads as "one more item in this collection" rather than
+   an unrelated block (Gestalt similarity), with a dashed border signaling
+   "empty/add" the same way rc-add-link's dashed pattern does elsewhere. ── */
+.rc-add-group-tile{
+  background:#fff;border:1.5px dashed var(--divider);border-radius:8px;
+  min-height:120px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+  color:var(--purple);font-size:12px;font-weight:600;cursor:pointer;transition:border-color 0.12s,background 0.12s;
+}
+.rc-add-group-tile i{font-size:18px;}
+.rc-add-group-tile:hover{border-color:var(--purple-light);background:var(--purple-pale);}
+
+/* ── Section 4 — Readiness Actions ── */
+.rc-actions-table{width:100%;border-collapse:collapse;font-size:11.5px;}
+.rc-actions-table th{text-align:left;font-size:9.5px;color:var(--t3);text-transform:uppercase;letter-spacing:0.3px;padding:6px 8px;border-bottom:1px solid var(--divider);}
+.rc-actions-table td{padding:9px 8px;border-bottom:1px solid var(--divider);vertical-align:top;color:var(--t1);}
+.rc-action-sn{width:26px;color:var(--t3);}
+.rc-action-type-cell{font-weight:600;color:var(--purple);white-space:nowrap;}
+.rc-action-reviewed-cell{width:64px;text-align:center;}
+.rc-action-reviewed-cell input{width:16px;height:16px;cursor:pointer;}
+.rc-action-del-cell{width:28px;text-align:center;}
+.rc-ai-pending-note-cell{padding:8px !important;border-bottom:none !important;background:var(--purple-pale);}
+.rc-ai-pending-note-cell .rc-ai-pending-note{margin-bottom:0;}
+
+/* ── Section 5 — Launch Recommendation ── */
+.rc-rec-value{display:inline-block;font-size:16px;font-weight:700;padding:4px 14px;border-radius:6px;margin-bottom:12px;}
+.rc-rec-ready{color:var(--green);background:var(--green-pale);}
+.rc-rec-conditional{color:var(--amber);background:var(--amber-pale);}
+.rc-rec-hold{color:var(--red);background:#F7E4E4;}
+.rc-rec-overridden{border:1px dashed currentColor;}
+.rc-rec-override-note{font-size:10.5px;color:var(--t3);margin:-4px 0 12px;display:flex;align-items:center;gap:5px;}
+
+/* ── Section 6 — Readiness Summary ── */
+.rc-accordion-card{border:1px solid var(--divider);border-radius:8px;margin-bottom:8px;overflow:hidden;}
+.rc-accordion-hdr{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;cursor:pointer;font-size:12px;font-weight:600;color:var(--t1);background:var(--card);}
+.rc-accordion-body{padding:12px 14px;font-size:11.5px;color:var(--t2);line-height:1.6;}
+.rc-chip{font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px;text-transform:uppercase;letter-spacing:0.3px;}
+.rc-chip-ok{color:var(--green);background:var(--green-pale);}
+.rc-chip-warn{color:var(--amber);background:var(--amber-pale);}
+.rc-chip-neutral{color:var(--t3);background:var(--divider);}
+.rc-export-btn{
+  background:none;border:1px solid var(--divider);color:var(--t2);border-radius:6px;
+  padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:var(--font);
+  display:inline-flex;align-items:center;gap:5px;
+}
+.rc-export-btn:hover{border-color:var(--purple);color:var(--purple);}
+.rc-summary-footer{display:flex;justify-content:flex-end;margin-top:16px;}
+.rc-finalized-label{font-size:12px;font-weight:700;color:var(--green);display:inline-flex;align-items:center;gap:5px;}
+
+.rc-footer-nav{display:flex;justify-content:flex-end;gap:8px;}
+
+/* ── Lineage drawer — nests INSIDE the readiness canvas, reuses the app's
+   existing 440px right-drawer width convention. ── */
+.rc-lineage-drawer{
+  position:absolute;top:0;right:-440px;bottom:0;width:440px;
+  background:#fff;border-left:1px solid var(--divider);
+  box-shadow:-4px 0 16px rgba(0,0,0,0.08);
+  transition:right 0.2s ease;z-index:70;
+  display:flex;flex-direction:column;
+}
+.rc-lineage-drawer.open{right:0;}
+.rc-lineage-hdr{display:flex;align-items:flex-start;justify-content:space-between;padding:14px 18px 10px;border-bottom:1px solid var(--divider);background:var(--card);flex-shrink:0;}
+.rc-lineage-tag{font-size:9px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:var(--purple);margin-bottom:4px;}
+.rc-lineage-title{font-size:13px;font-weight:700;color:var(--t1);line-height:1.3;}
+.rc-lineage-hdr button{background:none;border:none;cursor:pointer;color:var(--t3);flex-shrink:0;margin-top:1px;}
+.rc-lineage-body{flex:1;overflow-y:auto;padding:12px 18px;background:#fff;}
+.rc-lineage-entry{border-bottom:1px solid var(--divider);padding:10px 0;}
+.rc-lineage-req{font-size:12px;font-weight:600;color:var(--t1);}
+.rc-lineage-chain{font-size:10.5px;color:var(--t3);margin-top:3px;}
+.rc-lineage-hyp{font-size:10.5px;color:var(--purple);margin-top:3px;}
+.rc-lineage-footer{min-height:48px;box-sizing:border-box;padding:10px 18px;display:flex;align-items:center;border-top:1px solid var(--divider);background:var(--card);flex-shrink:0;font-size:10px;color:var(--t3);}
+.rc-lineage-stories{font-size:9.5px;color:var(--t4);margin-top:3px;}
+
+/* ── Outcome Pulse By Stage / By Release toggle (§3.2) — sits in the
+   Outcome Breakdown header row alongside the existing Metrics/Signal
+   filter controls, single row. ── */
+.op-group-toggle{display:flex;border:1px solid var(--divider);border-radius:6px;overflow:hidden;}
+.op-group-toggle-btn{
+  background:#fff;border:none;font-family:var(--font);font-size:10.5px;font-weight:600;
+  color:var(--t3);padding:5px 10px;cursor:pointer;
+}
+.op-group-toggle-btn.active{background:var(--purple);color:#fff;}
+.op-group-toggle-btn:not(.active):hover{background:var(--card);}
+
+/* ── sc-hyp-carry-warn — Section 4 Feature Canvas carry-forward soft
+   warning badge (§4.1), amber, non-blocking, no modal. ── */
+.sc-hyp-carry-warn{color:var(--amber);margin-left:4px;font-size:10px;display:inline-flex;align-items:center;}

@@ -64,3 +64,5 @@
 .modal-confirm-btn:disabled:hover{background:var(--label);}
 .modal-confirm-btn.danger{background:var(--red);}
 .modal-confirm-btn.danger:hover{background:#7A1F1F;}
+.modal-confirm-btn-secondary{background:#fff;color:var(--purple);border:1px solid var(--purple);border-radius:6px;padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;}
+.modal-confirm-btn-secondary:hover{background:var(--purple-pale);}

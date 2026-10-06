@@ -1,4 +1,4 @@
-# Design System — AI PM Toolkit
+# Design System — Product Studio
 
 This document is the single source of truth for all visual, layout, and component standards.
 Read this before writing any new CSS, building any new screen, or adding any UI component.
@@ -42,7 +42,7 @@ Never go below 9px for any visible text. Use Calibri only in PPTX exports — ne
 |---|---|---|
 | Page / screen titles | Title Case | Welcome Back, Create Your Account |
 | Tab labels | Title Case | Discovery Map, Capability Canvas, Market Intelligence |
-| Named features / modules | Title Case | Story Canvas, PI Canvas, Product Diagnostics |
+| Named features / modules | Title Case | Story Canvas, Release Canvas, Product Diagnostics |
 | Button CTAs | Title Case | Sign In, Create Account, Generate, Launch Session |
 | Form field labels | Title Case | Display Name, Email, Password, Company Name |
 | Segmented control options | Title Case | Outcome-Based, AI Generated, Capability-Based |
@@ -565,14 +565,13 @@ trapFocus(overlay);
 | Left panel form inputs, gen-btn, collapse-btn | `styles/04-left-panel.css` |
 | KPI tree, action bar, evidence drawer trigger | `styles/05-kpi-tree.css` |
 | Metrics definition | `styles/06-metrics-definition.css` |
-| Capability drawer (slide-in from KPI tree) | `styles/07-capability-drawer.css` |
 | Feature Canvas + Story Canvas shared | `styles/08-feature-canvas.css` |
 | Modals, export overlays | `styles/09-modals-export.css` |
 | Capability Canvas | `styles/10-capability-canvas.css` |
 | Diagnostic View | `styles/11-diagnostic-view.css` |
 | Product Diagnostics (leak analysis) | `styles/12-product-leak-analysis.css` |
 | Market Intelligence | `styles/13-market-intelligence.css` |
-| PI Canvas | `styles/14-pi-planning.css` |
+| Release Canvas | `styles/14-pi-planning.css` |
 | Admin Settings page | `styles/15-settings.css` |
 | Story Canvas | `styles/16-story-canvas-new.css` |
 | Home tab | `styles/17-home.css` |

@@ -3,6 +3,22 @@
 // Used in all AI prompts to avoid awkward "2-2" ranges when admin sets max to the locked minimum.
 function _spRange(mn,mx){return mn===mx?'exactly '+mn:(mn+'-'+mx);}
 
+// ── v9.13: AI usage-tracking prompt versions ──
+// Manually maintained, one entry per caller — bump the version string
+// whenever that caller's prompt changes materially (new fields, restructured
+// instructions, different schema). Lets future usage-dashboard analysis
+// distinguish "this caller got more expensive because usage went up" from
+// "this caller got more expensive because the prompt changed" — the two
+// look identical in raw token data without this tag. Absence (a caller not
+// listed here) is valid — "not yet tracked," not an error; callAPI() and
+// the ai-recommendations call site both already handle a missing entry by
+// sending null, so nothing breaks when a new caller is added here later.
+const PROMPT_VERSIONS = {
+  // Intentionally starts empty. Populate incrementally as prompts are
+  // deliberately versioned going forward — do not backfill guessed
+  // versions for existing prompts retroactively.
+};
+
 function buildTreePrompt(fd,extra){
   // Read depth from gData (refinement) or appSettings (fresh generation).
   // Refinement must use the depth the tree was originally generated at to avoid
@@ -27,6 +43,7 @@ function buildTreePrompt(fd,extra){
 - stage id: lowercase slug of label, underscores not hyphens (e.g. "order_capture")
 - stage description: maximum 12 words, present tense, what is measured in this stage
 - frameworks array: cite what applies, blend where necessary, be explicit if using first principles — never invent a framework name
+- REFERENCE ANCHOR: Based on Industry and Product Type above, silently identify one well-known company or product operating a comparable business model in this space (from training knowledge — do not name it in the output). Use its operating model to inform how value-chain stages are framed and named. Do not let this influence individual metric names — the metric-naming rule below remains the sole authority there. If no confident reference exists, use first-principles value-chain reasoning instead.
 - Do NOT force AAER unless this is a genuine consumer growth product
 - L1 per stage: as many as genuinely apply — no minimum, no maximum — never pad
 - Do NOT include l2_metrics, l3_metrics, or l4_metrics — depth setting is L1 only
@@ -40,6 +57,7 @@ function buildTreePrompt(fd,extra){
 - stage id: lowercase slug of label, underscores not hyphens (e.g. "order_capture")
 - stage description: maximum 12 words, present tense, what is measured in this stage
 - frameworks array: cite what applies, blend where necessary, be explicit if using first principles — never invent a framework name
+- REFERENCE ANCHOR: Based on Industry and Product Type above, silently identify one well-known company or product operating a comparable business model in this space (from training knowledge — do not name it in the output). Use its operating model to inform how value-chain stages are framed and named. Do not let this influence individual metric names — the metric-naming rule below remains the sole authority there. If no confident reference exists, use first-principles value-chain reasoning instead.
 - Do NOT force AAER unless this is a genuine consumer growth product
 - L1 per stage: as many as genuinely apply — no minimum, no maximum — never pad
 - L2 per L1: as many as have genuine diagnostic value
@@ -53,6 +71,7 @@ function buildTreePrompt(fd,extra){
 - stage id: lowercase slug of label, underscores not hyphens (e.g. "order_capture")
 - stage description: maximum 12 words, present tense, what is measured in this stage
 - frameworks array: cite what applies, blend where necessary, be explicit if using first principles — never invent a framework name
+- REFERENCE ANCHOR: Based on Industry and Product Type above, silently identify one well-known company or product operating a comparable business model in this space (from training knowledge — do not name it in the output). Use its operating model to inform how value-chain stages are framed and named. Do not let this influence individual metric names — the metric-naming rule below remains the sole authority there. If no confident reference exists, use first-principles value-chain reasoning instead.
 - Do NOT force AAER unless this is a genuine consumer growth product
 - L1 per stage: as many as genuinely apply — no minimum, no maximum — never pad
 - L2 per L1: as many as have genuine diagnostic value
@@ -136,6 +155,8 @@ ${fd.approach==='capability-based'?`Rules:
 - Do NOT force AAER unless this is a genuine consumer growth product
 - L1 capabilities per stage: as many as genuinely apply — no minimum, no maximum — never pad
 - Each L1 capability name must be specific to this exact product — never generic
+- REFERENCE ANCHOR: Based on Industry and Product Type above, silently identify one well-known company or product that operates a comparable business model in this space (from your training knowledge — do not name it in the output, do not ask the user). Use that company's actual operating model as a mental reference so capability naming reflects how such a business genuinely runs, not generic industry terms. If no confident reference exists for this industry/product type, proceed using deep first-principles reasoning about the value chain instead — never force a weak or invented analogue.
+- DISTINCTIVENESS QUOTA: Of the capabilities generated across all stages, at least 15-20% must be distinctive to this exact vertical/sub-sector — the kind of capability that would NOT appear in a generic cross-industry capability list.
 - CAPABILITY NAMING — a capability name describes a function or system the product performs, never a measurement. Do NOT end a capability name with a metric-style suffix: Rate, Score, Accuracy, Latency, Frequency, Depth, Distribution, Coverage, Completeness, Conflict Rate, Success Rate, Throughput, Timeliness, or similar measurement units. If you find yourself naming something that sounds like it belongs on a dashboard, rename it to the underlying capability that the measurement would be measuring.
   Examples (WRONG → RIGHT):
   - "Order Ingestion Success Rate" → "Order Ingestion & Validation"
@@ -722,19 +743,19 @@ Return ONLY strict JSON — no markdown, no backticks, no preamble:
 }`;
 }
 
-// ── PI PLANNING PROMPTS ──
+// ── RELEASE PLANNING PROMPTS ──
 
 function buildPICapPrompt(ctx,piGoal,capabilityName,refinement){
   if(typeof _assertPromptCtx==='function')_assertPromptCtx(ctx,'buildPICapPrompt');
   const productName=ctx.name;const industry=ctx.industry;
   const _piDocText=ctx.docContext||'';
   const _piHasDoc=String(_piDocText).trim().length>0;
-  const _piEnrichment=_piHasDoc?'\n'+_docEnrichmentInstruction()+'\n'+_backlogEnrichmentInstruction()+'\nNote for PI planning: if a roadmap document is present, use it to inform sequencing and committed vs aspirational work. If a strategy document is present, use it to validate that this capability aligns with stated strategic priorities — not to generate new capabilities.':'';
-  return `You are a senior product strategist. Generate capabilities for a PI-first product plan.
+  const _piEnrichment=_piHasDoc?'\n'+_docEnrichmentInstruction()+'\n'+_backlogEnrichmentInstruction()+'\nNote for release planning: if a roadmap document is present, use it to inform sequencing and committed vs aspirational work. If a strategy document is present, use it to validate that this capability aligns with stated strategic priorities — not to generate new capabilities.':'';
+  return `You are a senior product strategist. Generate capabilities for a release-first product plan.
 
 Product: ${productName}
 Industry: ${industry}
-${piGoal?'PI Business Goal: '+piGoal:''}
+${piGoal?'Release Goal: '+piGoal:''}
 Capability: "${capabilityName}"
 ${ctx.additionalContext?'Additional context: '+ctx.additionalContext:''}
 ${_piDocText}${_piEnrichment}
@@ -745,7 +766,7 @@ Return ONLY this JSON — no markdown, no backticks:
   "capabilities": [
     {
       "name": "${capabilityName}",
-      "why": "why this capability matters for the PI goal — one sentence, specific",
+      "why": "why this capability matters for the release goal — one sentence, specific",
       "sub_capabilities": [
         {"name": "sub-cap name", "why": "specific contribution"}
       ],
@@ -758,55 +779,12 @@ Rules:
 - Return exactly 1 capability — the one named above, expanded with why and optional sub-caps
 - sub_capabilities: ${(typeof appSettings==='undefined'||appSettings.includeSubCaps)?'include ONLY if the capability is genuinely complex. Return null if not needed':'always return null — sub-capabilities are disabled for this workspace'}
 - If sub_capabilities exist, return 2-3 of them
-- why must reference the PI business goal if provided
+- why must reference the release goal if provided
 - features array always empty`;
 }
 
-function buildPIStoryPrompt(ctx,piGoal,capName,featName,featWhy,refinement){
-  if(typeof _assertPromptCtx==='function')_assertPromptCtx(ctx,'buildPIStoryPrompt');
-  const productName=ctx.name;const industry=ctx.industry;
-  const context=piGoal?piGoal:'delivering value this PI';
-  return `You are a senior product strategist writing user stories for a PI plan.
-
-Product: ${productName}
-Industry: ${industry}
-PI Goal: ${context}
-Capability: "${capName}"
-Feature: "${featName}"
-Feature rationale: ${featWhy}
-${refinement?'PM context: '+refinement:''}
-
-Generate user stories in Gherkin format. Return ONLY this JSON — no markdown, no backticks:
-{
-  "stories": [
-    {
-      "title": "short story title",
-      "statement": "As a [user], I want [goal], so that [benefit].",
-      "points": 3,
-      "priority": "Must Have",
-      "scenarios": [
-        {
-          "name": "scenario name",
-          "given": "precondition",
-          "when": "action",
-          "then": "outcome",
-          "and": ""
-        }
-      ]
-    }
-  ]
-}
-
-Rules:
-- ${(function(){const sc=Math.max(1,Number(typeof appSettings!=='undefined'?appSettings.maxStories:5)||1);return _spRange(sc,sc);})() } stories per feature
-- points: 1-8, calibrated to ${(function(){const v=typeof appSettings!=='undefined'?appSettings.teamVelocity:'med';return v==='low'?'low team velocity (3 pts/dev/sprint)':v==='high'?'high team velocity (8 pts/dev/sprint)':'medium team velocity (5.6 pts/dev/sprint)'})()}
-- priority: Must Have / Should Have / Could Have
-- Each story must directly deliver part of the feature
-- scenarios: ${_spRange(1,typeof appSettings!=='undefined'?appSettings.maxACs:3)} per story — specific, testable`;
-}
-
 // v8.98 — Rearchitected (see CHANGELOG). The model now supplies ONLY the four
-// semantic judgments that genuinely require reasoning: PI-Goal alignment,
+// semantic judgments that genuinely require reasoning: Release Goal alignment,
 // business value, time criticality, risk reduction, plus dependency-edge
 // extraction/inference and VoC/doc grounding sentences (written once, never
 // re-expanded). Diagnostic_Boost, composite scoring, MoSCoW gating, dependency
@@ -822,15 +800,15 @@ function buildPIGeneratePrompt(productName,industry,piGoal,stories,knownDeps,piS
     origin:s.origin||'kpi'
   })));
   const depStr=knownDeps?knownDeps.trim():'None provided';
-  return `You are a senior PI Planning facilitator. Provide the judgment-based inputs a deterministic sequencing engine needs to build a PI sprint plan. You do NOT sequence, score composite values, assign squads, or assign sprints — a separate engine does that from the fields you provide here.
+  return `You are a senior Release Planning facilitator. Provide the judgment-based inputs a deterministic sequencing engine needs to build a release sprint plan. You do NOT sequence, score composite values, assign squads, or assign sprints — a separate engine does that from the fields you provide here.
 
 Product: ${productName}
 Industry: ${industry}
-PI Goal: ${piGoal||'Deliver highest-value capabilities this PI'}
-PI Start: ${piStartDate||'TBD'}
+Release Goal: ${piGoal||'Deliver highest-value capabilities this release'}
+Release Start: ${piStartDate||'TBD'}
 Product Problem: ${productProblem||'Not specified'}
 Product KPIs: ${productKpis||'Not specified'}
-PI Constraints: ${constraints||'None declared'}
+Release Constraints: ${constraints||'None declared'}
 ${docContext||''}
 
 Stories (${stories.length} total):
@@ -847,12 +825,12 @@ If feedback/VoC content is present (complaints, NPS/CSAT verbatims, reviews, sur
 
 Return ONLY this JSON — no markdown, no backticks:
 {
-  "businessValueOneLiner": "one sentence — what this PI delivers commercially",
+  "businessValueOneLiner": "one sentence — what this release delivers commercially",
   "businessValueBullets": ["bullet 1","bullet 2","bullet 3"],
   "storyScores": {
     "storyId": {
       "piGoalAlignment": 5,
-      "alignmentReason": "max 18 words, names which entity in the PI Goal this story connects to",
+      "alignmentReason": "max 18 words, names which entity in the Release Goal this story connects to",
       "businessValue": 7,
       "timeCriticality": 5,
       "riskReduction": 3,
@@ -870,13 +848,13 @@ Every story in the input list must appear exactly once as a key in storyScores, 
 Scoring guidance:
 
 piGoalAlignment (1-5):
-  5 (Direct) — story outcome directly moves the metric, behavior, or user action named in the PI Goal. Shared entities: if the PI Goal names a metric and the story's linked metric/capability/feature matches or directly drives it, score 5.
-  3 (Supports) — same product area/user journey as the PI Goal, but does not directly move the named metric.
-  1 (Unrelated) — maintenance, polish, or unrelated area with no reasoning path back to the PI Goal.
+  5 (Direct) — story outcome directly moves the metric, behavior, or user action named in the Release Goal. Shared entities: if the Release Goal names a metric and the story's linked metric/capability/feature matches or directly drives it, score 5.
+  3 (Supports) — same product area/user journey as the Release Goal, but does not directly move the named metric.
+  1 (Unrelated) — maintenance, polish, or unrelated area with no reasoning path back to the Release Goal.
   For EVERY story write alignmentReason. If you cannot articulate a specific connection, score 1 — do not default to 3 out of uncertainty.
 
 businessValue (1-10) — use Product Problem, Product KPIs, and any PRD/RFP/VoC document signal as reference frame, not the story title in isolation.
-timeCriticality (1-10) — use PI Constraints and any roadmap document signal. Do not factor in PI start date proximity — the engine handles date-based sequencing.
+timeCriticality (1-10) — use Release Constraints and any roadmap document signal. Do not factor in release start date proximity — the engine handles date-based sequencing.
 riskReduction (1-10) — security, compliance, defect-fix, and technical-debt work scores higher than net-new feature work.
 
 Dependencies — combine two sources: (1) parse the PM's free-text known-dependencies into fromId/toId edges (source:"pm"), matching against the story list by title/feature similarity; (2) infer additional genuine technical-sequencing dependencies you can identify from story content alone (source:"ai") — only where there is real technical necessity, not loose thematic relation. fromId blocks toId means fromId must complete before toId can start. Do not fabricate an edge for stories with no clear technical or PM-declared relationship.`;}
@@ -889,7 +867,7 @@ const SYS_MI='You are a senior market research analyst and product strategy cons
 
 const SYS_MI_DOCX='You are a senior market research consultant. Respond ONLY with valid JSON. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.';
 
-const SYS_PI='You are a senior PI Planning facilitator. Respond ONLY with valid JSON. No markdown, no backticks, no preamble.';
+const SYS_PI='You are a senior Release Planning facilitator. Respond ONLY with valid JSON. No markdown, no backticks, no preamble.';
 
 // ── buildSummariseDocumentPrompt ──
 // Extracted from summariseDocument() in utils.js.
@@ -919,7 +897,7 @@ function buildSummariseDocumentPrompt(truncatedText, fileName){
     +'- feedback: customer feedback, NPS, CSAT, app store reviews, VoC report, verbatim quotes, survey results\n'
     +'- roadmap: product roadmap, release plan, delivery timeline, Now/Next/Later, themes, horizons, initiatives table\n'
     +'- strategy: product strategy, OKR document, objectives, key results, SWOT, competitive positioning, north star, product vision\n'
-    +'- backlog: prior sprint backlog, PI plan export, JIRA export, story list\n'
+    +'- backlog: prior sprint backlog, release plan export, JIRA export, story list\n'
     +'- other: Slack export, chat transcript, exploratory notes, general reference\n\n'
     +'Rules:\n'
     +'- Use the filename as a strong signal for docType. A file named "strategy", "roadmap", "prd", "backlog", "voc" etc. should bias heavily toward that docType unless the content clearly contradicts it.\n'
@@ -935,11 +913,37 @@ function buildSummariseDocumentPrompt(truncatedText, fileName){
   return {sys:sys, usr:usr};
 }
 
+// ── buildRequirementAgentDocGistPrompt ──
+// v9.30.03 — lightweight, cheap gist + suggested-questions call fired
+// once, fire-and-forget, right after a mid-chat Requirement Agent upload
+// finishes indexing (requirement-agent.js's _raShowDocGist(), called from
+// raHandleUpload()). Deliberately NOT buildSummariseDocumentPrompt's full
+// docType/keyDecisions/constraints/metrics dossier above — that's a
+// heavier, differently-purposed structured extraction (Home's session-
+// document upload). This just gives the PM a starting point for what to
+// ask, so it stays small and cheap: one short gist line, a few candidate
+// questions, nothing else.
+function buildRequirementAgentDocGistPrompt(fileName, truncatedText){
+  var sys='You are a product analyst previewing a just-uploaded document for a product manager. Return ONLY valid JSON. No markdown, no backticks, no preamble.';
+  var usr='Skim this document and return JSON matching this exact schema:\n'
+    +'{\n'
+    +'  "gist": "1-2 sentences, max 40 words, plain-language description of what this document appears to cover",\n'
+    +'  "suggestedQuestions": ["question 1", "question 2", "question 3"]\n'
+    +'}\n\n'
+    +'Rules:\n'
+    +'- gist: hedge appropriately ("looks like", "appears to cover") since you are only skimming an excerpt, not fully verifying - never state its contents as certain fact.\n'
+    +'- suggestedQuestions: exactly 2-3 short, specific questions (max 15 words each) a product manager could ask about THIS document\'s actual content to help draft a requirement - not generic questions that would fit any document.\n'
+    +'- Base both fields only on what is actually in the document below - never invent content it does not contain.\n'
+    +'- filename hint: "'+fileName+'"\n\n'
+    +'DOCUMENT:\n'+truncatedText;
+  return {sys:sys, usr:usr};
+}
+
 // ── buildAIRecommendationsPrompt ──
 // Extracted from home.js AI recommendations panel.
 // Returns {sys, usr} for the next-action recommendations call.
 function buildAIRecommendationsPrompt(sessionSummaries){
-  var sys='You are a senior product management advisor helping a PM prioritise their work. You will be given a list of active product sessions with their current pipeline stage and counts. Return ONLY a valid JSON array with no preamble, no markdown, no code fences. Maximum 3 items. Each item must have: sessionId (string), text (string — one clear actionable sentence telling the PM exactly what to do next and why), tag (string — product name + stage, append session name in brackets only if multiple sessions share the same product name), targetTab (string — the tab where the session currently is, NOT where it should go next; use: mm for Discovery Map, cc for Capability Canvas, fc for Feature Canvas, sc for Story Canvas, pi for PI Canvas), priority (string: "high" or "medium"). IMPORTANT: targetTab must reflect the current stage of the session, not a future recommendation. If a session is at Feature Canvas, targetTab must be "fc".';
+  var sys='You are a senior product management advisor helping a PM prioritise their work. You will be given a list of active product sessions with their current pipeline stage and counts. Return ONLY a valid JSON array with no preamble, no markdown, no code fences. Maximum 3 items. Each item must have: sessionId (string), text (string — one clear actionable sentence telling the PM exactly what to do next and why), tag (string — product name + stage, append session name in brackets only if multiple sessions share the same product name), targetTab (string — the tab where the session currently is, NOT where it should go next; use: mm for Discovery Map, cc for Capability Canvas, fc for Feature Canvas, sc for Story Canvas, pi for Release Canvas), priority (string: "high" or "medium"). IMPORTANT: targetTab must reflect the current stage of the session, not a future recommendation. If a session is at Feature Canvas, targetTab must be "fc".';
   var usr='Here are the active sessions:\n\n'+JSON.stringify(sessionSummaries,null,2)+'\n\nReturn up to 3 prioritised next-action recommendations as a JSON array. Be specific — reference the product name, what has been done, and what should happen next.';
   return {sys:sys, usr:usr};
 }
@@ -1064,4 +1068,422 @@ function buildPrototypeBriefPrompt(ctx, feat, storySnapshot, screenTitle, wirefr
     + '- Never use em dashes. Use hyphens or rewrite.';
 
   return { sys: sys, usr: usr };
+}
+
+// ── Guided Launch (gl) — v9.15 ──
+// Both builders return {sys,usr} and expect the model to respond with ONLY
+// valid JSON (no markdown fences) so guided-launch.js's _glParseJSON() can
+// parse it directly — same convention as the wireframe/brief prompts above.
+
+// Opening turn — reads the identical context Quick Launch would have used
+// (sessionContext, see home.js's _homeDoLaunch()) and produces a first-draft
+// requirements brief plus a conversational summary of what the agent understood.
+function buildGuidedLaunchOpeningPrompt(sessionContext){
+  const cp=sessionContext.companyProfile||{};
+  const pp=sessionContext.productProfile||{};
+  const docsStr=(sessionContext.sessionDocs||[]).map(function(d){
+    return '- '+(d.name||'Untitled')+(d.aiSummary?(': '+d.aiSummary):'');
+  }).join('\n')||'None';
+
+  const sys='You are a senior product management practitioner running a guided intake conversation for a product discovery tool. '
+    + 'You open the conversation by reading everything already known about the product and proposing a starting requirements brief — not by asking the user to repeat context they already gave. '
+    + 'Never use em dashes. Use hyphens or rewrite. Respond with ONLY valid JSON, no markdown fences, no commentary outside the JSON.';
+
+  const usr='COMPANY PROFILE:\n'+(cp.companyName||'Unnamed company')+' — '+(cp.companyStrategy||cp.companyContext||'No description provided')+'\n\n'
+    + 'PRODUCT PROFILE:\n'+(pp.productName||'Unnamed product')+' — '+(pp.productDesc||'No description provided')+'\n'
+    + 'Industry: '+(pp.industry||cp.companyIndustry||'Not specified')+'\n'
+    + 'Product type: '+(pp.productType||'Not specified')+'\n\n'
+    + 'SESSION SETUP:\nApproach: '+(sessionContext.approach||'outcome-based')+'\nGeneration mode: '+(sessionContext.generationMode||'ai-generated')+'\n'
+    + (sessionContext.customValueChain?('Custom value chain:\n'+sessionContext.customValueChain+'\n'):'')
+    + (sessionContext.additionalContext?('Additional context: '+sessionContext.additionalContext+'\n'):'')
+    + '\nUPLOADED DOCUMENTS:\n'+docsStr+'\n\n'
+    + 'TASK: Write a conversational opening message (chatReply) that shows you understood the above — reference 2-3 specific facts from it, not generic filler — then state a clear recommendation for where to start. Then draft a first requirements brief in markdown (markdown) covering: a one-paragraph summary, a recommended starting capability/focus area (as a "## Recommended Starting Point" section with an H3 sub-heading naming the specific capability), supporting capabilities, and key constraints.\n\n'
+    + 'Return ONLY valid JSON with these exact fields:\n'
+    + '{\n'
+    + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings",\n'
+    + '  "markdown": "the full requirements brief in markdown, starting with a single # H1 title"\n'
+    + '}';
+
+  return { sys: sys, usr: usr };
+}
+
+// Revision turn — takes the running chat history + current draft + the
+// user's latest message (or an uploaded document's extracted text) and
+// produces a targeted update, not a full rewrite. changedSectionHeading is
+// the exact H2 heading text of whichever section actually changed, used by
+// guided-launch.js to flash-highlight just that section — the simplest
+// robust marker-based approach the spec flagged as an open decision,
+// deliberately not client-side HTML diffing.
+function buildGuidedLaunchTurnPrompt(sessionContext, draftMd, chatHistory, userMessage, uploadedDocText, uploadedDocName){
+  const historyStr=(chatHistory||[]).map(function(m){
+    return (m.role==='user'?'User: ':'You: ')+m.content;
+  }).join('\n');
+
+  const sys='You are continuing a guided product-intake conversation, refining a requirements brief that already has a real draft. '
+    + 'When the user pushes back or corrects something, make a TARGETED update to the relevant section only — never a full rewrite of sections that were not affected. '
+    + 'When a document is uploaded, extract and summarize only what is relevant into the appropriate section(s) — never dump raw file text into the draft. '
+    + 'Never use em dashes. Use hyphens or rewrite. Respond with ONLY valid JSON, no markdown fences, no commentary outside the JSON.';
+
+  const usr='CURRENT DRAFT (markdown):\n'+draftMd+'\n\n'
+    + 'CONVERSATION SO FAR:\n'+historyStr+'\n\n'
+    + (uploadedDocText
+      ? ('THE USER JUST UPLOADED A DOCUMENT ("'+(uploadedDocName||'document')+'"). Extract and summarize only what is relevant into the draft, merging it into the right existing section (or add one if genuinely new). Document text:\n'+uploadedDocText.slice(0,8000)+'\n')
+      : ('THE USER JUST SAID:\n'+userMessage+'\n'))
+    + '\nTASK: Reply conversationally (chatReply) confirming what changed and re-prompting for confirmation. Update the draft (markdown) with a targeted change — keep every unaffected section exactly as it was. Identify the exact H2 heading text of the section you changed (changedSectionHeading) — or null if the change does not map to a single H2 section (e.g. a brand-new section added, or no material change).\n\n'
+    + 'Return ONLY valid JSON with these exact fields:\n'
+    + '{\n'
+    + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings",\n'
+    + '  "markdown": "the FULL updated requirements brief in markdown, starting with a single # H1 title",\n'
+    + '  "changedSectionHeading": "exact H2 heading text that changed, or null"\n'
+    + '}';
+
+  return { sys: sys, usr: usr };
+}
+
+// ── Requirement Agent (ra) — v9.16 ──
+// Global, one-conversation-per-release-scope agent, symmetric across
+// capabilities from the start (unlike Guided Launch, which is a single
+// pre-Discovery-Map intake chat). Reads gData/capStore GLOBALS directly
+// (not passed as params) — same load-order reasoning already documented
+// above buildCapFeaturesPrompt() for OUTCOME_HYP_UNITS: these functions are
+// only ever invoked at chat-turn time, long after kpi-tree.js/
+// capability-canvas.js have populated both globals, and Requirement Agent
+// is itself gated on capStore already having content (see
+// capability-canvas.js's raEnabled gate), so both are always meaningfully
+// populated by the time either builder below actually runs.
+// Both return {sys,usr}; the model must respond with ONLY valid JSON, same
+// convention as Guided Launch's builders — requirement-agent.js's own
+// _raParseJSON() parses it.
+
+function _raSummarizeCapStore(){
+  if(typeof capStore==='undefined'||!capStore)return 'No capabilities generated yet.';
+  var lines=[];
+  Object.keys(capStore).forEach(function(mk){
+    var entry=capStore[mk];
+    if(!entry||!entry.capabilities)return;
+    var label=(entry.metricName||mk)+(entry.stageLabel?(' ['+entry.stageLabel+']'):'');
+    entry.capabilities.forEach(function(cap){
+      var feats=(cap.featStore&&cap.featStore.top)?cap.featStore.top.map(function(f){return f.name;}):[];
+      lines.push('- '+label+' › '+cap.name+(cap.why?(' - '+cap.why):'')+(feats.length?(' | existing features: '+feats.join(', ')):' | existing features: none'));
+    });
+  });
+  return lines.length?lines.join('\n'):'No capabilities generated yet.';
+}
+
+function _raSummarizeDiscoveryMap(){
+  if(typeof gData==='undefined'||!gData||!gData.stages)return 'No Discovery Map generated yet.';
+  var lines=[];
+  gData.stages.forEach(function(st){
+    (st.l1_metrics||[]).forEach(function(m){
+      lines.push('- ['+(st.label||st.id)+'] '+m.name+(m.why?(' - '+m.why):''));
+    });
+  });
+  return lines.length?lines.join('\n'):'No Discovery Map generated yet.';
+}
+
+// Shared section-content rules for the Live Draft — used by BOTH the
+// opening prompt and every ongoing-turn prompt. 11 canonical sections
+// (matching the PM's own reference product-spec convention, "## N. <Name>"
+// once rendered) — this brief is meant to be the single reference document
+// driving every later stage of the build (Capability Canvas, Feature
+// Canvas, Story Canvas, etc.), not just a scoping summary.
+// v-next (live PM feedback, confirmed via a real repro): an earlier version
+// of this rule said liveDraftMd "must always contain ALL of these sections,
+// every turn, even if thin" and told the model to fill any gap by
+// "inferring reasonable candidates from the Discovery Map context" and
+// tagging it "(inferred - confirm with PM)". In practice this meant the
+// OPENING turn invented a full Problem Statement, Success Criteria, etc.
+// before the PM had said a single word - confidently-worded content with
+// zero real basis, which every downstream stage then inherited as if it
+// were real. Hard rule below reverses that default: real content requires
+// real basis (the PM's own words in this conversation, or an uploaded
+// document); Discovery Map/product-profile context alone is NEVER
+// sufficient basis to write Problem Statement, Success Criteria, Target
+// Users, User Journeys, or Non-Functional Requirements content - only to
+// ask a good opening question. A section with no real basis yet is simply
+// left out of sectionUpdates (the client shows a "not yet discussed"
+// placeholder) - never filled with a guess just so the document "looks"
+// complete. "(inferred - confirm with PM)" still exists, but now means
+// something narrower: a bounded, reasonable extrapolation FROM something
+// the PM/document actually said (e.g. the PM says "reduce onboarding
+// drop-off" and you infer a specific candidate metric for it) - never an
+// invention from silence.
+function _raSectionContentRules(){
+  return 'LIVE DRAFT SECTION RULES - the 11 canonical sections, in order, referred to by these exact bare names in the "section" field of sectionUpdates below (the client adds numbering/headings, you never write "## N." yourself):\n'
+    + '- "Requirement Summary": one tight sentence or two - what release/scope this conversation covers, in plain product language. Only write this once the PM has actually indicated real scope/intent (even roughly) - not from Discovery Map context alone.\n'
+    + '- "Problem Statement": 1-3 sentences naming the SPECIFIC user or business problem this release addresses - the actual friction/gap, why it matters now, who is affected. Only write this from something the PM (or an uploaded document) actually said - if nothing has been said yet, leave this section out of sectionUpdates entirely rather than inventing one from Discovery Map/product-profile context.\n'
+    + '- "Success Criteria": a short bullet list (2-4 bullets max) of concrete, measurable outcomes - not generic platitudes. Same rule: only from real PM/document signal, never invented from Discovery Map context alone.\n'
+    + '- "Capabilities": one sub-heading per touched capability, with 1-2 short bullets under each of what changes for that capability in this release. Tag each sub-heading in ONE of these two EXACT forms:\n'
+    + '  * "(existing)" - the capability already exists on the Capability Canvas listed below.\n'
+    + '  * "(will be created — under: <Metric or Process Area Name>)" - a genuinely new capability. You MUST name a target here. First check whether an EXISTING Discovery Map metric or process area (copied EXACTLY, verbatim, from the Discovery Map list below - not paraphrased) is a reasonable home for this capability - if so, name that specific metric/process area, NOT the value chain stage it sits under. Only name the value chain STAGE itself (not one of its metrics) if the capability is genuinely cross-cutting - spanning multiple process areas within that stage with no single one being the clear primary home. Only if truly no existing metric or stage fits at all, propose a new, SPECIFIC, descriptive name for a new metric or process area this capability would belong under (e.g. "under: Repeat Order and Habit Formation") - NEVER a generic placeholder like "Custom Metric", "Custom Process Area", or "New Metric". Default to matching an existing metric whenever remotely plausible; treat "no existing metric fits" as the exception, not the default.\n'
+    + '  EXCEPTION to the real-basis rule above: this section MAY start pre-populated with capabilities that genuinely ALREADY EXIST on the Capability Canvas, tagged "(existing)" - that is real system state, not invention, so it is fine even before the PM has said anything this conversation. A capability tagged "(will be created)" still needs real PM/document basis like every other section - never propose a new capability out of nowhere.\n'
+    + '- "Features": a per-capability list - one "### <Capability Name>" sub-heading per touched capability, exactly matching the capability names used under "Capabilities" above - followed by one bullet per feature in this EXACT format: "- <Feature Name> (new feature): <requirement narrative>" or "- <Feature Name> (existing feature): <requirement narrative>". The requirement narrative must capture the actual detail the PM described in chat (specific behaviors, edge cases, operational definitions), one to two sentences - never a restatement of the feature name. Same existing-vs-new exception as Capabilities: only genuinely EXISTING features may appear before the PM discusses anything; every "(new feature)" needs real basis.\n'
+    + '- "Target Users": a short bullet list (2-4 bullets max), each "- <Persona Name>: <one-line description>" - who this release is for. Real-basis rule applies - leave this section out until the PM (or a document) has actually said who they are building for.\n'
+    + '- "User Journeys": one "### <Journey Name>" sub-heading per key scenario the PM has actually described, with numbered steps ("1. ", "2. ", ...). Leave this out entirely until there is a real scenario to describe - never invent a generic journey to fill space.\n'
+    + '- "Non-Functional Requirements": bullets in the exact format "- **<Category>:** <detail>" (e.g. Performance, Security, Scalability, Availability, Privacy, Accessibility) - only categories the PM has actually raised or that are obviously implied by something concrete they said (e.g. they mention "thousands of concurrent users" implies a Scalability NFR). Never a generic boilerplate NFR list invented from nothing.\n'
+    + '- "Out of Scope": what the PM has explicitly said is excluded (bullet list, be specific). Leave out if nothing has been excluded yet - do not guess at exclusions.\n'
+    + '- "Assumptions": two sub-lists, each populated only when genuinely needed. "Assumptions made so far" - a NARROW, bounded extrapolation FROM something the PM/document actually said (never from Discovery Map context alone), each bullet STARTING WITH THE LITERAL PREFIX "**Assumed:** ", e.g. the PM describes a loyalty points feature without saying when points are credited and you note "**Assumed:** Points are credited only after order confirmation." "Risks and dependencies" - real risks/dependencies/constraints that have actually come up, each bullet STARTING WITH THE LITERAL PREFIX "**Risk:** ". If there is nothing genuinely assumed or risked yet, leave this section out rather than manufacturing filler.\n'
+    + '- "Open Questions": a bullet mirroring each entry in the openQuestions field below (never more, never fewer). Leave out only if openQuestions is empty AND was already empty before this turn. If it just became empty THIS turn (every question got answered), you MUST still include this section in sectionUpdates with body "" (empty string), to clear the stale list - see the CRITICAL - openQuestions consistency rule below.\n'
+    + 'WRITE TIGHT: every bullet is one clear sentence, every paragraph is 1-3 sentences max. No filler transitions ("Building on this...", "As mentioned above...", "It is worth noting that..."). No restating information that is already visible in another section. If a sentence can be cut without losing real information, cut it.\n'
+    + 'The "(inferred - confirm with PM)" tag is for a bounded, reasonable extrapolation FROM something real the PM/document said - never for content invented from silence. If you have no real basis for a section at all, do not include it in sectionUpdates and do not tag a guess as inferred just to have something to show - leaving it out (so the PM sees "not yet discussed") is always correct over guessing.';
+}
+
+// Proactive clarifying questions — RARE by design, not routine, AND no
+// longer paired with "default to inferring" (that pairing is exactly what
+// caused the opening-turn hallucination bug — see _raSectionContentRules()'s
+// comment above). The real default for a section with no basis is now
+// "leave it out, PM sees not-yet-discussed" (handled entirely by
+// sectionUpdates simply omitting it - nothing to do here for that case).
+// This rule only governs the rarer case of actively asking. Preserved from
+// the prior live-feedback fix, unchanged: (1) an explicit PM opt-out is
+// durable for the rest of the conversation, checked first; (2) CASE A's
+// hard frequency cap, since asking on nearly every turn felt forced and
+// never let up.
+// v-next (live PM feedback, real transcript repro): CASE B replaces the
+// old COVERAGE SCAN "close chatReply with a bare nudge" behavior (e.g.
+// "Want to walk through User Journeys next, or tackle NFRs?" with no
+// options and no stated recommendation) — confirmed from a real
+// conversation that this produced an inconsistent, option-less, reasoning-
+// less prompt the PM had to both interpret AND supply the content for.
+// Both cases now share one requirement that was previously missing
+// entirely: do the actual analysis FIRST (concrete candidates grounded in
+// what's already known, not abstract questions), commit to a
+// recommendation, THEN ask - mirroring how a thoughtful colleague would
+// raise it, never a bare "what do you want to do next?".
+function _raClarifyingQuestionsRules(){
+  return 'CLARIFYING QUESTIONS (clarifyingQuestions field) - covers TWO distinct situations, both ALWAYS rendered to the PM as clickable option chips, never a bare question with no options that forces a free-text reply:\n'
+    + 'CASE A - BLOCKING GAP: something you have no real basis to fill at all, and important enough that leaving it open would block real progress on the rest of the release (e.g. two fundamentally different directions are both plausible and guessing wrong means redoing real work) - never merely because a section is empty or you would prefer more detail. RARE - across the WHOLE conversation, ask no more than a small handful of times total, never more than 1 in any single turn, never in two turns in a row (if you asked a CASE A question last turn, this turn\'s CASE A must be empty regardless of how important the next gap seems). Never ask about the same section twice, and never ask again about something the PM has already answered in any form, even loosely.\n'
+    + 'CASE B - SECTION TRANSITION: the PM has wrapped up real input for now (no CASE A gap pending) but at least one ELIGIBLE section is still genuinely unaddressed. Raise ONE next section to tackle. This replaces any bare "what do you want to do next" nudge - never ask that as plain chatReply text with no options. Allowed roughly once per natural pause (NOT subject to CASE A\'s "handful per whole conversation" cap - only to "at most 1 per turn" and "never fabricate one when the PM is clearly still mid-thought on something else or every section already has real content"). Never repeat the same targetSection twice in a row.\n'
+    + 'CASE B ELIGIBLE SECTIONS ONLY - "Target Users", "User Journeys", "Success Criteria", "Non-Functional Requirements", "Capabilities", "Features": these need a genuine forward-looking judgment call only the PM can make, so proactively raising them is natural. NEVER raise "Open Questions", "Out of Scope", "Assumptions", or "Requirement Summary" as a CASE B target - these four are backward-looking/derivative by nature (see their real-basis rules above): "Open Questions" is only ever a mirror of CASE A activity and is "addressed" precisely when there is nothing pending in it, never something to survey the PM about directly; "Out of Scope" and "Assumptions" should fall out as natural implications of decisions already made elsewhere, captured only when the PM volunteers them or a real basis clearly exists (see their real-basis rules above) - asking a PM cold "what\'s out of scope?" or "what are your assumptions?" inverts the natural direction the information flows, same failure as the old bare nudge this fix replaced; "Requirement Summary" is synthesized FROM the other sections, never independently discussed. If one of these four is still empty and every CASE-B-eligible section already has real content, simply leave it as-is - do not manufacture a question for it.\n'
+    + 'STEP 1 - check for an opt-out FIRST, every turn, for BOTH cases: scan the conversation so far for the PM ever saying anything like "don\'t ask me questions with choices", "stop asking", "I\'ll tell you what I know", or similar - once said, ALWAYS return an empty clarifyingQuestions array for the REST of this conversation, no matter how important a gap seems. Never re-ask, never "just this once". From that point on, every remaining gap simply stays out of sectionUpdates until the PM addresses it in plain chat - never filled by inference, never asked about again.\n'
+    + 'STEP 2 - if no opt-out has been given and either case applies: before writing anything, do the actual analysis yourself first. For the target section, work out 2-4 CONCRETE, SPECIFIC candidate directions or answers, grounded in (a) everything already established in this conversation/brief and (b) ordinary product judgment for a feature like this - never abstract or generic ("what are your success criteria?", "what user journeys apply?"). Decide which candidate you would actually recommend, and say so plainly with a short reason in chatReply, the same way you would explain your thinking to a colleague - never a bare "what do you want to tackle next?" and never silently jumping into a section without first proposing what is actually in it. Then phrase "question" as the concrete ask and "options" (2 to 4 short, complete candidate answers - never yes/no, never a placeholder like "Option A") as those SAME candidates, with your recommended one reading like a real, ready-to-accept answer, not a vague label.\n'
+    + 'GOOD example (CASE B, do this): chatReply says "For User Journeys, since this is silent background grounding, there are really two scenarios worth capturing: (1) a consultant uploads a doc mid-conversation and expects every later generation to reflect it automatically, or (2) a consultant explicitly references an uploaded doc in a prompt. I\'d cover (1) first since that\'s the primary flow - want to go with that, cover both, or is there a different journey you have in mind?", with options like ["Cover scenario 1 - automatic mid-conversation grounding", "Cover both scenarios", "Something else - let me describe it"].\n'
+    + 'BAD example (never do this): chatReply says "Want to walk through Target Users next, or tackle Non-Functional Requirements?" with no options field populated and no stated recommendation - this forces the PM to both pick a direction AND independently supply the content themselves.\n'
+    + '"targetSection" is the exact section name (e.g. "Target Users") in both cases. CASE A questions must also appear verbatim in the openQuestions array (real tracked content gaps). CASE B suggestions must NOT appear in openQuestions - they are a workflow nudge, not a content gap the brief needs to track; see the CRITICAL - openQuestions consistency rule below. A pending question of either case never blocks anything else - every OTHER section that does have real content this turn still gets included in sectionUpdates regardless.';
+}
+
+// Opening turn — Discovery-First Entry Point redesign (§6.1/§6.2). Triggered
+// from Discovery Map's "Define Requirements" CTA, BEFORE any capability
+// necessarily exists — replaces the pre-redesign buildRequirementAgentOpeningPrompt(),
+// which assumed CC-anchored, capability-aware context (that function and its
+// CC-side entry point are removed per §4). One function, branching internally
+// on whether capStore has any entries — Pass 1 (greenfield, zero capabilities)
+// vs Pass 2 (iterative, capabilities already exist) — rather than forking
+// into parallel functions, mirroring how other prompt builders in this
+// codebase already branch on session state.
+// v-next (dual-mode streaming, off by default — see requirement-agent.js's
+// _raStreamingEnabled()): when streamingMode is true, the model must emit
+// chatReply as PLAIN TEXT first (so the client can reveal it token-by-token
+// as it streams), followed by a sentinel line, followed by a JSON object
+// with every other field. When false (the default), behavior is byte-for-
+// byte identical to before this change - one JSON blob including chatReply.
+var _RA_STREAM_SENTINEL='---RA-JSON---';
+function _raStreamFormatInstruction(){
+  return 'Respond in TWO PARTS, in this exact order: (1) the conversational chatReply as PLAIN TEXT - no JSON, no surrounding quotes, no markdown fences, nothing else on this part; (2) on its own line, the exact text "'+_RA_STREAM_SENTINEL+'"; (3) a single valid JSON object containing every OTHER field (never chatReply again - it was already written in part 1). No markdown fences, no commentary, on either part.';
+}
+function buildRequirementAgentDMOpeningPrompt(sessionContext,firstName,docContext,streamingMode){
+  const sc=sessionContext||{};
+  const pp=sc.productProfile||{};
+  const cp=sc.companyProfile||{};
+  const dmStr=_raSummarizeDiscoveryMap();
+  const hasCaps=(typeof capStore!=='undefined'&&capStore&&Object.keys(capStore).length>0);
+  const nsmName=(typeof gData!=='undefined'&&gData&&gData.nsm)?(gData.nsm.metric||''):'';
+  const nsmActual=(typeof gData!=='undefined'&&gData&&gData.nsm&&gData.nsm.actual!==null&&gData.nsm.actual!==undefined)?gData.nsm.actual:null;
+  const nsmStr=nsmName?(nsmName+(nsmActual!==null?(' (currently '+nsmActual+')'):'')):'not yet set';
+
+  const sharedSys='You are a senior product management practitioner running a Requirement Agent conversation - a global, release-scoped requirements intake that PROPOSES the capability list, grounded in real product/metric context, rather than requiring capabilities as a precondition for use. '
+    + 'One conversation here always maps to one release scope, symmetric across every capability it touches from the very first turn. '
+    + 'Never use em dashes. Use hyphens or rewrite. '
+    + (streamingMode ? _raStreamFormatInstruction() : 'Respond with ONLY valid JSON, no markdown fences, no commentary outside the JSON.');
+
+  if(!hasCaps){
+    // Pass 1 — greenfield. No existing capabilities to default to; the
+    // agent's first job is to play back product/Discovery Map context in a
+    // single message, then ask intent - never force the PM down its own
+    // recommendation path, "tell me what you want" and "recommend one for
+    // me" are equally valid next moves.
+    const sys=sharedSys
+      + ' This is a PASS 1 (greenfield) conversation - zero capabilities exist yet for this product. '
+      + 'The opening message has exactly one real job: get the PM to pick a starting path. Keep the product/Discovery Map context playback to ONE short sentence at most - name the North Star Metric only, never list every value chain stage or its individual metrics one by one, that is a wall of text the PM already saw on the Discovery Map screen seconds ago and does not need replayed. The open-ended question offering BOTH "tell me what you want to build" and "I can recommend an initial set" as equally valid paths is the actual point of this message and must be the clear main event, not an afterthought after a long recap - never push the PM toward the recommendation path as the default.';
+
+    const usr='PRODUCT: '+(pp.productName||'Unnamed product')+' - '+(pp.productDesc||'No description provided')+'\n'
+      + (cp.companyName?('COMPANY: '+cp.companyName+(cp.industry?(' ('+cp.industry+')'):'')+'\n'):'')
+      + 'NORTH STAR METRIC: '+nsmStr+'\n\n'
+      + 'DISCOVERY MAP (every value chain stage, with its metrics/process areas):\n'+dmStr+'\n\n'
+      + 'CAPABILITIES: none exist yet for this product - this is a Pass 1 (greenfield) conversation.\n\n'
+      + (docContext||'')
+      + 'TASK: Write a conversational opening message (chatReply) that starts with exactly "Hi '+(firstName||'there')+', " (this literal greeting, then continue naturally). ONE short sentence naming the North Star Metric and that no capabilities exist yet (e.g. "Your North Star Metric is X, and no capabilities exist yet for this product.") - never list every value chain stage or its metrics one by one, the PM just saw that on the Discovery Map screen. Then the real content of this message: an open-ended intent question offering both "tell me what you want to build" and "I can recommend an initial set" as equally valid paths - make this the clear focus of the message, not a small line after a long recap. Do NOT draft any Live Draft section content yet - this is Pass 1, the PM has said nothing about what they want to build, and Discovery Map/product context alone is never enough basis to write a Problem Statement, Success Criteria, or any other section (see the rules below for exactly what counts as real basis). sectionUpdates should almost always be an empty array on this turn - only include an entry if the PM\'s uploaded document (docContext above) already contains enough real detail to genuinely write one, never from Discovery Map context alone.\n\n'
+      + _raSectionContentRules()+'\n\n'
+      + _raClarifyingQuestionsRules()+'\n\n'
+      + (streamingMode
+        ? ('Write chatReply first, as PLAIN TEXT (2-4 sentences plus the one open-ended question, no markdown headings, never a numbered list of strategy options or a brainstorm unless the PM explicitly asked for options - long text here is a real cost, it adds directly to how long the PM waits). Then, on its own line, the exact text "'+_RA_STREAM_SENTINEL+'". Then ONLY this valid JSON:\n'
+          + '{\n'
+          + '  "sectionUpdates": [{"section": "one of the 11 exact bare section names, e.g. \'Problem Statement\'", "body": "markdown body only, no heading line"}],\n'
+          + '  "openQuestions": ["short clarification question text", "..."],\n'
+          + '  "clarifyingQuestions": [{"question": "...", "targetSection": "one of the 11 exact section names above, e.g. \'Target Users\'", "options": ["short concrete answer 1", "short concrete answer 2", "..."]}],\n'
+          + '  "suggestedTitle": "a short (3-6 word) SPECIFIC title for this conversation - even at this early stage, name the likely release focus (e.g. \'Consumer Acquisition Push\', \'Onboarding Funnel Revamp\') rather than a generic placeholder like \'Release Requirements\' or \'New Conversation\'. Never include the product name - the release focus alone is enough."\n'
+          + '}')
+        : ('Return ONLY valid JSON with these exact fields:\n'
+          + '{\n'
+          + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings. KEEP IT SHORT - 2-4 sentences plus the one open-ended question, never a numbered list of strategy options or a brainstorm unless the PM explicitly asked for options. Long chatReply text is a real cost - it adds directly to how long the PM waits for this turn.",\n'
+          + '  "sectionUpdates": [{"section": "one of the 11 exact bare section names, e.g. \'Problem Statement\'", "body": "markdown body only, no heading line"}],\n'
+          + '  "openQuestions": ["short clarification question text", "..."],\n'
+          + '  "clarifyingQuestions": [{"question": "...", "targetSection": "one of the 11 exact section names above, e.g. \'Target Users\'", "options": ["short concrete answer 1", "short concrete answer 2", "..."]}],\n'
+          + '  "suggestedTitle": "a short (3-6 word) SPECIFIC title for this conversation - even at this early stage, name the likely release focus (e.g. \'Consumer Acquisition Push\', \'Onboarding Funnel Revamp\') rather than a generic placeholder like \'Release Requirements\' or \'New Conversation\'. Never include the product name - the release focus alone is enough."\n'
+          + '}'));
+
+    return { sys: sys, usr: usr };
+  }
+
+  // Pass 2 — iterative. Capabilities already exist; surface what already
+  // exists (count + brief characterization, referencing prior finalized
+  // RQs by number) BEFORE asking intent - never skip straight to "what do
+  // you want to build" as if this were Pass 1.
+  const ccStr=_raSummarizeCapStore();
+  const priorBriefs=(typeof raConversations!=='undefined'?raConversations:[]).filter(function(c){return c.status==='finalized';});
+  const priorBriefsStr=priorBriefs.length
+    ?priorBriefs.map(function(c){return '- '+(c.rqNumber||'')+' "'+(c.title||'Untitled')+'" - touched: '+(c.touchedCapabilityKeys||[]).map(function(t){return t.name;}).join(', ');}).join('\n')
+    :'None finalized yet.';
+
+  const sys=sharedSys
+    + ' This is a PASS 2 (iterative) conversation - capabilities already exist for this product (listed below, with their existing features at name-level - full detail is pulled turn-by-turn as the conversation narrows). '
+    + 'The opening message has exactly one real job: get the PM to say what they want to work on this time. State the count and ONE short sentence characterizing what already exists (referencing the prior finalized release, e.g. "from RQ01") BEFORE asking intent - never skip straight to "what do you want to build" as if nothing existed yet, but never let this recap outweigh the actual question either; the PM can already see the full capability list on Capability Canvas, they do not need it replayed here. '
+    + 'When the requirements you go on to discuss do not map to any EXISTING capability listed below, say so in plain conversational text and tag that capability "will be created — under: <Metric or Process Area Name>" in the Live Draft, naming a real existing Discovery Map metric/process area when one fits, else a specific new proposed name (never a generic placeholder). Classify new-vs-existing using SEMANTIC SIMILARITY - shared mechanism, shared user problem, shared metric alignment - never exact or fuzzy string-matching on capability names alone.';
+
+  const usr='PRODUCT: '+(pp.productName||'Unnamed product')+' - '+(pp.productDesc||'No description provided')+'\n'
+    + (cp.companyName?('COMPANY: '+cp.companyName+(cp.industry?(' ('+cp.industry+')'):'')+'\n'):'')
+    + 'NORTH STAR METRIC: '+nsmStr+'\n\n'
+    + 'DISCOVERY MAP (every value chain stage, with its metrics/process areas):\n'+dmStr+'\n\n'
+    + 'EXISTING CAPABILITY CANVAS (every capability + existing feature NAMES only - not full detail):\n'+ccStr+'\n\n'
+    + 'PRIOR FINALIZED REQUIREMENT AGENT CONVERSATIONS (for "from RQ01" style references):\n'+priorBriefsStr+'\n\n'
+    + (docContext||'')
+    + 'TASK: Write a conversational opening message (chatReply) that starts with exactly "Hi '+(firstName||'there')+', " (this literal greeting, then continue naturally). State the capability count and a brief characterization of what already exists, referencing the relevant prior RQ(s) by number, then ask what the PM wants to work on this time - new requirements, or changes to something already built. The Capability Canvas and prior finalized briefs above are BACKGROUND KNOWLEDGE ONLY, so you can characterize what exists and ask an informed intent question - sectionUpdates MUST be an empty array on this turn, regardless of what already exists on the Capability Canvas. Do NOT pre-populate "Capabilities", "Features", Problem Statement, Success Criteria, Target Users, User Journeys, or Non-Functional Requirements yet - the PM has not said anything about this release\'s intent this turn, so there is no real basis yet for ANY section, existing capabilities included; only once the PM says which capability/features this release actually touches should those sections start reflecting it (see the rules below).\n\n'
+    + _raSectionContentRules()+'\n\n'
+    + _raClarifyingQuestionsRules()+'\n\n'
+    + (streamingMode
+      ? ('Write chatReply first, as PLAIN TEXT (2-4 sentences plus the one intent question, no markdown headings, never a numbered list of strategy options or a brainstorm unless the PM explicitly asked for options - long text here is a real cost, it adds directly to how long the PM waits). Then, on its own line, the exact text "'+_RA_STREAM_SENTINEL+'". Then ONLY this valid JSON:\n'
+        + '{\n'
+        + '  "sectionUpdates": [{"section": "one of the 11 exact bare section names, e.g. \'Capabilities\'", "body": "markdown body only, no heading line"}],\n'
+        + '  "openQuestions": ["short clarification question text", "..."],\n'
+        + '  "clarifyingQuestions": [{"question": "...", "targetSection": "one of the 11 exact section names above, e.g. \'Target Users\'", "options": ["short concrete answer 1", "short concrete answer 2", "..."]}],\n'
+        + '  "suggestedTitle": "a short (3-6 word) SPECIFIC title for this conversation naming the likely release focus (e.g. \'Loyalty Referral Rewards Program\', \'Lapsed User Win-Back\') - never a generic placeholder like \'Release Requirements\' or \'New Conversation\'. Never include the product name - the release focus alone is enough."\n'
+        + '}')
+      : ('Return ONLY valid JSON with these exact fields:\n'
+        + '{\n'
+        + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings. KEEP IT SHORT - 2-4 sentences plus the one intent question, never a numbered list of strategy options or a brainstorm unless the PM explicitly asked for options. Long chatReply text is a real cost - it adds directly to how long the PM waits for this turn.",\n'
+        + '  "sectionUpdates": [{"section": "one of the 11 exact bare section names, e.g. \'Capabilities\'", "body": "markdown body only, no heading line"}],\n'
+        + '  "openQuestions": ["short clarification question text", "..."],\n'
+        + '  "clarifyingQuestions": [{"question": "...", "targetSection": "one of the 11 exact section names above, e.g. \'Target Users\'", "options": ["short concrete answer 1", "short concrete answer 2", "..."]}],\n'
+        + '  "suggestedTitle": "a short (3-6 word) SPECIFIC title for this conversation naming the likely release focus (e.g. \'Loyalty Referral Rewards Program\', \'Lapsed User Win-Back\') - never a generic placeholder like \'Release Requirements\' or \'New Conversation\'. Never include the product name - the release focus alone is enough."\n'
+        + '}'));
+
+  return { sys: sys, usr: usr };
+}
+
+// Ongoing turns — analogous to buildGuidedLaunchTurnPrompt(). When a
+// proposed feature set doesn't map to any existing capability, the agent
+// says so in plain conversational text (never a structured consent-card
+// message type - that mechanism does not exist in this version) AND tags
+// the new capability "will be created" (exact copy, never "new") in the
+// Live Draft's "## 4. Capabilities" section.
+function buildRequirementAgentTurnPrompt(sessionContext,liveDraftMd,chatHistory,userMessage,docContext,uploadedDocText,uploadedDocName,streamingMode,retrievedDocContext){
+  const sc=sessionContext||{};
+  const historyStr=(chatHistory||[]).map(function(m){
+    return (m.role==='user'?'User: ':'You: ')+m.text;
+  }).join('\n');
+  const ccStr=_raSummarizeCapStore();
+  const dmStr=_raSummarizeDiscoveryMap();
+  // §6.3 — carry the same capStore + prior-finalized-briefs context through
+  // EVERY turn, not just the opening, since new-vs-existing classification
+  // (§6.4) can be revised mid-conversation as the PM adds detail. Discovery
+  // Map context (§10) is included here too — every turn can propose a new
+  // capability, so every turn needs the real metric/process area list to
+  // match against, not just the opening turn.
+  const priorBriefs=(typeof raConversations!=='undefined'?raConversations:[]).filter(function(c){return c.status==='finalized';});
+  const priorBriefsStr=priorBriefs.length
+    ?priorBriefs.map(function(c){return '- '+(c.rqNumber||'')+' "'+(c.title||'Untitled')+'" - touched: '+(c.touchedCapabilityKeys||[]).map(function(t){return t.name;}).join(', ');}).join('\n')
+    :'None finalized yet.';
+
+  const sys='You are continuing a Requirement Agent conversation, refining a release-scoped brief that already has real content. '
+    + 'This conversation is symmetric across every capability it touches - never favor one capability\'s section over another\'s once both are in scope. '
+    + 'When the requirements you are discussing do not map to any EXISTING capability listed below, say so in plain conversational text (never a structured card, button, or special message type) and tag that capability "will be created — under: <Metric or Process Area Name>" (this exact phrase, never bare "new") in the "Capabilities" section, under its own sub-heading - naming a real EXISTING Discovery Map metric/process area (copied verbatim from the list below) when one genuinely fits, or a specific new proposed name (never a generic placeholder like "Custom Metric") only when none does. '
+    + 'CLASSIFICATION RULE: classify each piece of capability-level discussion as belonging to an existing capability or warranting a new one using SEMANTIC SIMILARITY - shared mechanism, shared user problem, shared metric alignment. Do not rely on name similarity alone - consider whether the underlying mechanism, user problem, or metric this addresses is genuinely the same as an existing capability\'s, even if the names differ. Never use exact or fuzzy string-matching on capability names as your basis for this decision. '
+    + 'When you cannot confidently classify a piece of discussion as belonging to an existing capability vs. warranting a new one, raise this exactly like any other open question - add it to openQuestions, phrased so the ambiguity itself is clear (e.g. "Should X belong under existing capability Y, or is it its own new capability?"). Do not invent a different mechanism for this - the existing openQuestions/assumption flow is the only mechanism, no new question type. '
+    + 'When a document is uploaded mid-conversation, extract and summarize only what is relevant into sectionUpdates - never dump raw file text into any section. '
+    + 'Never use em dashes. Use hyphens or rewrite. '
+    + (streamingMode ? _raStreamFormatInstruction() : 'Respond with ONLY valid JSON, no markdown fences, no commentary outside the JSON.');
+
+  const usr='DISCOVERY MAP (every value chain stage, with its metrics/process areas — the only valid source of an EXISTING metric/process area name for the "will be created — under:" tag):\n'+dmStr+'\n\n'
+    + 'EXISTING CAPABILITY CANVAS (for matching against - capabilities NOT in this list, if the conversation needs them, must be tagged "will be created — under: <Metric or Process Area Name>"; every capability\'s existing feature NAMES are included too, for new-vs-existing feature classification):\n'+ccStr+'\n\n'
+    + 'PRIOR FINALIZED REQUIREMENT AGENT CONVERSATIONS (for "from RQ01" style references and cross-release context):\n'+priorBriefsStr+'\n\n'
+    + (docContext||'')
+    // v14 (RA-Persistent-Doc-RAG-Spec-v14, D3/D5/D6) — excerpts retrieved
+    // from this conversation's own persistently-indexed uploads (see
+    // _raRunTurn()), already formatted via _docFormatBlock()'s existing
+    // untrusted-content framing — reused as-is, not a new mechanism.
+    + (retrievedDocContext||'')
+    + 'CURRENT BRIEF (markdown, exactly what the PM sees right now - reference this to know what already exists and avoid duplicating or contradicting it, but you are NOT re-emitting this, only the sections that change):\n'+(liveDraftMd||'(nothing written yet)')+'\n\n'
+    + 'CONVERSATION SO FAR:\n'+historyStr+'\n\n'
+    + (uploadedDocText
+      ? ('THE USER JUST UPLOADED A DOCUMENT ("'+(uploadedDocName||'document')+'")'+(userMessage?(' along with this message: "'+userMessage+'" - treat the message as context for interpreting the document'):'')+'. Extract and summarize only what is relevant into sectionUpdates, for whichever section(s) it actually informs - this may also surface a new capability, tagged per the "will be created — under:" rule above. Document text:\n'+uploadedDocText+'\n\n')
+      : ('THE USER JUST SAID:\n'+userMessage+'\n\n'))
+    + 'TASK: Reply conversationally (chatReply) - never invent your own greeting here, this is a continuing turn. Return sectionUpdates ONLY for section(s) whose content genuinely changed or is being filled in for the first time because of real information in this turn - never re-include a section just to "keep it current" if nothing about it actually changed (the client keeps whatever was already there). The one exception: if a section\'s EXISTING content is now stale or wrong (e.g. an open question just got answered, an assumption was confirmed or corrected), you MUST include that section with its updated content to replace the stale text - omitting it would leave the old, now-wrong text frozen in the brief forever. Never fill a section that still has no real basis just because this turn touched a different one. See the section-content rules below for what belongs in each and what counts as real basis.\n\n'
+    + _raSectionContentRules()+'\n\n'
+    + 'CRITICAL - openQuestions consistency: the openQuestions array below must be the EXACT set of CASE A (blocking-gap) clarifying questions you are still waiting on the user to answer, no more and no fewer - CASE B section-transition suggestions (see CLARIFYING QUESTIONS below) are workflow nudges, never included here. Never include a question the user\'s latest message already answered. If openQuestions is non-empty, sectionUpdates must include an "Open Questions" entry mirroring it exactly; if openQuestions just became empty this turn (every question got answered), include an "Open Questions" entry with body "" (empty string) too, so the stale list is cleared, not left behind. If your chatReply text numbers or lists specific open questions to the user, the openQuestions array must contain exactly those same questions, same count, same order - a mismatch between what you show the user and what you return in this field is treated as a bug.\n\n'
+    // Only pay this paragraph's token/attention cost on a turn where the
+    // brief actually still has an unaddressed section - once every section
+    // has real content, (liveDraftMd||'').indexOf(...) stays -1 and this
+    // is skipped entirely rather than re-asking the model to re-scan all
+    // 11 sections against the full history for no reason every turn.
+    // v-next: this used to ALSO instruct closing chatReply with a bare,
+    // option-less "want to walk through X next?" nudge - removed per real
+    // PM feedback (inconsistent, no options, no recommendation). Steering
+    // toward the next section is now CASE B in _raClarifyingQuestionsRules()
+    // below, which requires real candidate content + a recommendation
+    // before asking, rendered as clickable options like every other
+    // clarifying question - this paragraph now ONLY does the backfill pass.
+    + (((liveDraftMd||'').indexOf('_Yet to be discussed_')!==-1)
+      ? ('COVERAGE SCAN - run this every turn, after everything above: look at the CURRENT BRIEF and list which of the 11 sections still show "_Yet to be discussed_" (no real content yet). For each, check the FULL CONVERSATION SO FAR (not just this turn\'s message) for real information that already satisfies that section\'s real-basis rule - if the PM said something relevant in an earlier turn that never got written in, include that section in sectionUpdates now to backfill it. This retroactive check runs every turn, not only when something new is said. If sections still remain unaddressed after backfilling, see CASE B (SECTION TRANSITION) in CLARIFYING QUESTIONS below for how to steer the PM toward one - never as a bare chatReply nudge with no options.\n\n')
+      : '')
+    + _raClarifyingQuestionsRules()+'\n\n'
+    + (streamingMode
+      ? ('Write chatReply first, as PLAIN TEXT (2-4 sentences, get to the point, never a numbered list of strategy options or a brainstorm unless the PM explicitly asked for options - long text here is a real cost, it adds directly to how long the PM waits). Then, on its own line, the exact text "'+_RA_STREAM_SENTINEL+'". Then ONLY this valid JSON:\n'
+        + '{\n'
+        + '  "sectionUpdates": [{"section": "one of the 11 exact bare section names, e.g. \'Problem Statement\'", "body": "markdown body only, no heading line"}],\n'
+        + '  "openQuestions": ["short clarification question text", "..."],\n'
+        + '  "clarifyingQuestions": [{"question": "...", "targetSection": "one of the 11 exact section names, e.g. \'Target Users\'", "options": ["short concrete answer 1", "short concrete answer 2", "..."]}],\n'
+        + '  "suggestedTitle": "a short (3-6 word) SPECIFIC title naming the likely release focus (e.g. \'Loyalty Referral Rewards Program\'). Return one whenever either (a) the conversation is still on a generic placeholder title and this turn has made the scope specific enough to name it, OR (b) the conversation\'s actual topic has genuinely pivoted to something different from what the CURRENT title (the brief\'s H1, above) describes - titles are not one-time, they should stay accurate if the PM changes direction mid-conversation. Do NOT re-title for a mere refinement, added detail, or narrowing WITHIN the same topic the current title already names - only for a real change of subject. Otherwise return an empty string. Never the product name, never a generic placeholder like \'Release Requirements\'. Always include this field, even as an empty string - never omit it."\n'
+        + '}')
+      : ('Return ONLY valid JSON with these exact fields:\n'
+        + '{\n'
+        + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings. KEEP IT SHORT - 2-4 sentences, get to the point, never a numbered list of strategy options or a brainstorm unless the PM explicitly asked for options. Long chatReply text is a real cost - it adds directly to how long the PM waits for this turn.",\n'
+        + '  "sectionUpdates": [{"section": "one of the 11 exact bare section names, e.g. \'Problem Statement\'", "body": "markdown body only, no heading line"}],\n'
+        + '  "openQuestions": ["short clarification question text", "..."],\n'
+        + '  "clarifyingQuestions": [{"question": "...", "targetSection": "one of the 11 exact section names, e.g. \'Target Users\'", "options": ["short concrete answer 1", "short concrete answer 2", "..."]}],\n'
+        + '  "suggestedTitle": "a short (3-6 word) SPECIFIC title naming the likely release focus (e.g. \'Loyalty Referral Rewards Program\'). Return one whenever either (a) the conversation is still on a generic placeholder title and this turn has made the scope specific enough to name it, OR (b) the conversation\'s actual topic has genuinely pivoted to something different from what the CURRENT title (the brief\'s H1, above) describes - titles are not one-time, they should stay accurate if the PM changes direction mid-conversation. Do NOT re-title for a mere refinement, added detail, or narrowing WITHIN the same topic the current title already names - only for a real change of subject. Otherwise return an empty string. Never the product name, never a generic placeholder like \'Release Requirements\'. Always include this field, even as an empty string - never omit it."\n'
+        + '}'));
+
+  return { sys: sys, usr: usr };
+}
+
+// Feature-generation-from-brief — used by Capability Canvas's manual
+// "Generate Features" CTA (§6.5) whenever the capability has a non-null
+// intakeBriefId. Thin wrapper reusing buildCapFeaturesPrompt()'s JSON
+// contract/rules (features[] with name/why/hypothesis) so the parsed output
+// slots into capStore's existing featStore.top shape unmodified - but the
+// grounding context is a TARGETED per-capability extraction from that
+// conversation's liveDraftMd (via requirement-agent.js's
+// _raGetCapabilityBriefExcerpt() - feature narratives + release objectives
+// for THIS capability only), never the entire liveDraftMd blob. Passing the
+// whole document for every capability would dilute precision and increase
+// token cost for products with many capabilities per brief.
+function buildRAFeatureGenPrompt(ctx,nsm,stageLabel,metricName,capName,intakeBriefId,manualRefinement){
+  if(typeof _assertPromptCtx==='function')_assertPromptCtx(ctx,'buildRAFeatureGenPrompt');
+  var conv=(typeof _raFindConv==='function')?_raFindConv(intakeBriefId):null;
+  var briefExcerpt=(conv&&typeof _raGetCapabilityBriefExcerpt==='function')?_raGetCapabilityBriefExcerpt(conv,capName):'';
+  var excerpt=briefExcerpt
+    ?('Release requirements brief - targeted excerpt for capability "'+capName+'" (this is the PRIMARY source for these features - ground every feature in it):\n'+briefExcerpt)
+    :'';
+  var combined=excerpt+(manualRefinement?((excerpt?'\n\n':'')+'PM refinement for this generation: '+manualRefinement):'');
+  return buildCapFeaturesPrompt(ctx,nsm,stageLabel,metricName,capName,null,combined);
 }

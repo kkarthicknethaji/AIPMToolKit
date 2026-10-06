@@ -1,7 +1,24 @@
 # ── Netlify Configuration ──
-# No build step — app is pure static HTML/JS/CSS.
+# App is pure static HTML/JS/CSS — the one build step below exists only to
+# make anthropic-proxy.js's shared dependency resolvable to Netlify's
+# Function bundler (see proxy/providerAdapters.js's own "NOTE ON
+# PACKAGING" comment — this is that comment's predicted fallback, now
+# confirmed needed: a live deploy failed with "Cannot find module
+# '../../proxy/providerAdapters'" because the bundler does not trace a
+# relative require that crosses the netlify/functions/ directory boundary).
+# Copies the canonical file in, at build time, rather than hand-maintaining
+# a second copy — netlify/functions/providerAdapters.js is gitignored.
+#
+# NOT the live fix for this app today: this site deploys via manual zip
+# drag-and-drop, and Netlify does not run [build] commands for that deploy
+# path — only for a git-connected build. This command only takes effect if
+# this site is ever switched to git-connected builds. Until then, whoever
+# builds the deploy zip must bake a fresh netlify/functions/
+# providerAdapters.js copy into it by hand (see proxy/providerAdapters.js's
+# own comment) every time that file changes.
 
 [build]
+  command = "cp proxy/providerAdapters.js netlify/functions/providerAdapters.js"
   publish = "."
   functions = "netlify/functions"
 

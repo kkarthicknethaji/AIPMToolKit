@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>AI Control Tower | Product Studio</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet"/>
+<link href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css" rel="stylesheet"/>
+<link rel="icon" type="image/x-icon" href="./favicon.ico"/>
+<link rel="stylesheet" href="./styles/00-tokens.css">
+<link rel="stylesheet" href="./styles/03-header-settings.css">
+<link rel="stylesheet" href="./styles/26-cost-tower.css">
+<style>
+  html,body{height:100%;margin:0;padding:0;overflow:hidden;}
+  body{display:flex;flex-direction:column;}
+  .act-app-shell{flex:1;min-height:0;display:flex;flex-direction:column;}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <div class="hdr-l">
+    <span class="logo-txt" id="act-logo-txt" onclick="window.location.href='index.html'" style="cursor:pointer;" title="Go to Home"></span>
+    <div class="hdr-sep" id="act-hdr-sep" style="display:none;"></div>
+    <span class="hdr-title">Product Studio</span>
+    <span class="hdr-version" id="act-hdr-version"></span>
+  </div>
+  <div class="hdr-session-wrap">
+    <span class="hdr-product has-name" id="act-screen-name">AI Control Tower</span>
+  </div>
+  <div class="hdr-r">
+    <span class="hdr-badge">AI-Powered</span>
+    <div class="hdr-avatar-overlay" id="act-avatar-overlay" onclick="actAvatarClose()"></div>
+    <div class="hdr-avatar-wrap">
+      <div class="hdr-avatar" id="act-avatar" onclick="actAvatarToggle()" title="Account" aria-label="Account menu">?</div>
+      <div class="hdr-avatar-drop" id="act-avatar-drop">
+        <div class="hdr-avatar-user">
+          <div class="hdr-avatar-name" id="act-avatar-name">—</div>
+          <div class="hdr-avatar-email" id="act-avatar-email">—</div>
+        </div>
+        <div class="hdr-avatar-divider"></div>
+        <button class="hdr-avatar-profile" id="act-switch-app-item" onclick="actOpenSwitchAppModal()" style="display:none;">
+          <i class="ti ti-apps" aria-hidden="true"></i> Switch App
+        </button>
+        <!-- Escape hatch for a control_tower-access admin (spec §6a.4 Option
+             A) -- Team Management must stay reachable regardless of a
+             person's own access, and this is the only route back to it from
+             here. Hidden for non-admins, who couldn't use Team Management
+             anyway. -->
+        <button class="hdr-avatar-profile" id="act-team-settings-item" onclick="window.location.href='index.html?screen=team'" style="display:none;">
+          <i class="ti ti-users-group" aria-hidden="true"></i> Team Settings
+        </button>
+        <!-- Pure discovery link to the OpenAPI Ingestion Layer's published
+             reference (spec §7.2) -- deliberately NOT display:none like this
+             dropdown's other two items above. Those are hidden-by-default
+             and revealed conditionally by role/state; this is a single
+             static link with no role logic and no new state, so it stays
+             visible to every role by design. Don't "fix" this to match the
+             other two items' convention -- that would hide API docs from
+             everyone. -->
+        <button class="hdr-avatar-profile" id="act-api-docs-item" onclick="actOpenApiDocs()">
+          <i class="ti ti-api" aria-hidden="true"></i> API Documentation
+        </button>
+        <div class="hdr-avatar-divider"></div>
+        <button class="hdr-avatar-signout" onclick="authSignOut()">
+          <i class="ti ti-logout" aria-hidden="true"></i> Sign Out
+        </button>
+      </div>
+    </div>
+    <div class="cfg-wrap">
+      <button class="cfg-btn" id="act-cfg-btn" title="Full settings are available from the main Product Studio tab" style="cursor:default;opacity:.55;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Gate: shown while auth/company/role resolves, or if access is denied. Covers everything below until resolved. -->
+<div id="act-gate" class="act-gate-wrap" style="display:none;">
+  <div class="act-gate-card">
+    <div class="act-gate-title" id="act-gate-title">Loading…</div>
+    <div class="act-gate-sub" id="act-gate-sub"></div>
+  </div>
+</div>
+
+<div class="act-app-shell act-body" id="act-app-shell" style="display:none;">
+  <div class="act-out-hdr">
+    <div class="act-tab-row" role="tablist" aria-label="AI Control Tower screens">
+      <button class="act-tab-btn active" role="tab" id="act-tab-overview" onclick="actShowScreen('overview')">Overview</button>
+      <button class="act-tab-btn" role="tab" id="act-tab-cost" onclick="actShowScreen('cost')">Cost Breakdown</button>
+      <button class="act-tab-btn" role="tab" id="act-tab-outcome" onclick="actShowScreen('outcome')">Outcome-Based Cost</button>
+      <button class="act-tab-btn" role="tab" id="act-tab-plan" onclick="actShowScreen('plan')">AI Governance</button>
+    </div>
+  </div>
+
+  <div class="act-content-scroll">
+    <div class="act-content" id="act-content">
+
+      <section id="act-scr-overview" class="act-screen on"></section>
+      <section id="act-scr-cost" class="act-screen"></section>
+      <section id="act-scr-outcome" class="act-screen">
+        <div class="act-screen-header-row">
+          <div class="act-screen-title-block">
+            <div class="act-eyebrow">Outcome-Based Cost</div>
+            <div class="act-screen-subtitle">What you got for it, not what you spent.</div>
+          </div>
+          <div class="act-header-actions">
+            <div class="act-dropdown-chip-wrap">
+              <button class="act-dropdown-chip" onclick="actToggleMenu('act-outcome-period-menu')" aria-haspopup="true"><span class="act-dropdown-chip-value" id="act-outcome-period-value">This Month</span><svg class="act-chip-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg></button>
+              <div class="act-dropdown-chip-menu" id="act-outcome-period-menu">
+                <button onclick="actSelectOutcomePeriodChip('this_month','This Month')">This Month</button>
+                <button onclick="actSelectOutcomePeriodChip('last_month','Last Month')">Last Month</button>
+                <button onclick="actSelectOutcomePeriodChip('last_3_months','Last 3 Months')">Last 3 Months</button>
+                <button onclick="actSelectOutcomePeriodChip('overall','Overall')">Overall</button>
+                <button onclick="actOpenOutcomeCustomRangeModal()">Custom Range…</button>
+              </div>
+            </div>
+            <button class="export-cta-btn" id="act-export-outcome-btn" onclick="actDownloadReport('outcome')"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> Export</button>
+          </div>
+        </div>
+
+        <div id="act-export-outcome-target">
+        <div id="act-export-outcome-header" style="text-align:center;font-size:24px;font-weight:700;color:var(--t1);margin-bottom:16px;display:none;"></div>
+
+        <div class="act-how-to-read">
+          <span class="act-htr-item"><span class="act-htr-dot deliverable"></span><b>Exact traced cost</b> - Deliverables, one session, one real total</span>
+          <span class="act-htr-item"><span class="act-htr-dot yield"></span><b>Average cost per unit</b> - Generated Artifacts, one call can produce several at once</span>
+          <span class="act-htr-item"><span class="act-htr-dot footprint"></span><b>Direct + Economic Footprint</b> - Release Plan only, its own cost plus what fed into it</span>
+        </div>
+
+        <div class="act-section-title" style="margin-top:0;">Portfolio</div>
+        <div class="act-kpi-strip-5" id="outcome-kpi-strip"></div>
+
+        <div class="act-insight-card status-amber" style="margin-top:14px;">
+          <div class="act-insight-support" id="outcome-support" style="margin-bottom:0;"></div>
+          <div class="act-evidence-note">Completion means the generation reached its terminal state, not that it was accepted, kept, or used. Numbers are deterministic calculations over mt_ai_usage_events and mt_outcomes, not model-generated.</div>
+        </div>
+
+        <div class="act-section-title">At A Glance</div>
+        <div class="act-exec-grid" id="exec-insight-grid"></div>
+
+        <div class="act-section-title-row">
+          <div class="act-section-title">Outcome Portfolio</div>
+          <div class="act-portfolio-controls">
+            <div class="act-dropdown-chip-wrap">
+              <button class="act-dropdown-chip" onclick="actToggleMenu('sort-menu')" aria-haspopup="true">
+                <span class="act-dropdown-chip-label">Sort</span>
+                <span class="act-dropdown-chip-value" id="sort-value">Total Cost</span>
+                <svg class="act-chip-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div class="act-dropdown-chip-menu" id="sort-menu">
+                <button onclick="setPortfolioSort('cost','Total Cost')">Total Cost</button>
+                <button onclick="setPortfolioSort('trend','Trend')">Trend</button>
+                <button onclick="setPortfolioSort('waste','Abandoned / Failed Cost')">Abandoned / Failed Cost</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="act-scope-note" style="margin-bottom:10px;display:block;">Every card carries its own method badge — Deliverable cards show a real traced cost, Generated Artifact cards show an average, since one AI call can produce several artifacts at once with no honest way to split that call's cost between them. Click any card for the full breakdown and contributing calls.</div>
+
+        <div class="act-outcome-grid" id="portfolio-cards"></div>
+        <div class="act-scoped-card-note" style="margin:10px 0 16px;">Release Plan's own card leads with Direct Cost; its Economic Footprint (including upstream Discovery Map, Requirement Brief, Capability, Feature, and Story cost) is shown as a secondary figure and excluded from this sort and from Portfolio's totals above, since those dollars are already counted against their own outcome types elsewhere on this screen.</div>
+
+        <div class="act-section-title">Abandoned Deliverable Cost</div>
+        <div class="act-scoped-card soft">
+          <div class="act-section-insight" style="margin-bottom:10px;">Cost of outcomes that were started and abandoned before completion, deliverable types only. Generated Artifact types have no abandonment state, a failed generation call there shows up as a worse avg cost per unit on its own card instead, not here.</div>
+          <table class="act-data-table" id="sunk-cost-table"></table>
+        </div>
+
+        <div class="act-foot-hint">Reporting period governs every section above. Outcomes are counted in the period where they reach their terminal state — completed or abandoned — not where they started.</div>
+        </div>
+      </section>
+      <section id="act-scr-plan" class="act-screen"></section>
+
+    </div>
+  </div>
+</div>
+
+<div class="act-modal-overlay" id="act-modal-overlay" onclick="actCloseModal()"></div>
+<div class="act-modal-box" id="act-modal-box" role="dialog" aria-label="Details">
+  <div class="act-modal-header">
+    <div class="act-modal-title" id="act-modal-title">Details</div>
+    <button class="act-modal-close" onclick="actCloseModal()" aria-label="Close">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+  <div class="act-modal-body" id="act-modal-body"></div>
+</div>
+
+<!-- Supabase JS SDK (CDN — no build step) -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="./scripts/config.js"></script>
+<script src="./scripts/env.js"></script>
+<script src="./scripts/auth.js"></script>
+<script src="./scripts/cost-tower.js"></script>
+<script src="./scripts/cost-tower-outcomes.js"></script>
+
+</body>
+</html>

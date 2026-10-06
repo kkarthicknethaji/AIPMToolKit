@@ -79,7 +79,7 @@ function _homeApplyReadOnlyState(){
   // Disable every left-panel setup control individually — Demo Data card
   // controls are NOT in this list, by design (see comment above).
   const _fieldIds=['home-product-sel','home-approach-outcome','home-approach-capability',
-    'home-mode-ai','home-mode-manual','home-custom-vc','home-mi-toggle','home-gen-btn'];
+    'home-mode-ai','home-mode-manual','home-custom-vc','home-mi-toggle','home-launch-btn'];
   _fieldIds.forEach(function(id){
     const el=document.getElementById(id);
     if(el) el.disabled=isReadOnly;
@@ -190,7 +190,7 @@ function homeOnProductChange(){
 // Enable/disable launch button
 // Blocks if no product selected OR if any session doc is still processing
 function _homeUpdateLaunchBtn(){
-  const btn=document.getElementById('home-gen-btn');
+  const btn=document.getElementById('home-launch-btn');
   const errEl=document.getElementById('home-launch-error');
   if(!btn)return;
   // v9.09 — Read Only hard-blocks launch regardless of product/doc state.
@@ -516,6 +516,18 @@ function _homeWireCounters(){
   }
 }
 
+// v9.17.01 — single CTA, replaces the old Quick Launch / Guided Launch
+// button pair. The v9.16 Guided Launch toggle that used to route this to
+// homeGuidedLaunch() has been removed per product decision (Guided Launch
+// is no longer a Home entry point — it collided naming-wise with the real,
+// global Requirement Agent tab and is being retired as a Home CTA). This
+// always calls homeLaunch(); homeGuidedLaunch() itself is left intact in
+// case Guided Launch needs a future entry point, but nothing on Home calls
+// it anymore.
+function homeLaunchUnified(){
+  homeLaunch();
+}
+
 // ── Launch Session ──
 function homeLaunch(){
   // v9.09 — Read Only hard block, independent of the button's disabled
@@ -546,22 +558,19 @@ function homeLaunch(){
   _homeDoLaunch();
 }
 
-function _homeDoLaunch(){
-  // Clear demo if active
-  if(document.getElementById('demo-badge')){
-    if(typeof clearDemoMode==='function') clearDemoMode();
-  }
-
-  _isDemoSession=false;
-
-  // Snapshot sessionContext
+// v9.15 — extracted from _homeDoLaunch() so homeGuidedLaunch() can build the
+// exact same sessionContext shape without a second hand-maintained copy (a
+// hard requirement per the Guided Launch spec: both entry paths must read
+// from an identical context set). Pure snapshot — does not touch
+// sessionActive/sessionContext globals or launch anything; callers do that.
+function _homeBuildSessionContext(){
   const profile=productProfiles.find(function(p){return p.id===activeProfileId;});
   const ctxEl=document.getElementById('home-additional-context');
   const vcEl=document.getElementById('home-custom-vc');
   const miEl=document.getElementById('home-mi-toggle');
   const aiSuggestEl=document.getElementById('home-ai-suggest-toggle');
 
-  sessionContext={
+  return {
     companyProfile: companyProfile ? JSON.parse(JSON.stringify(companyProfile)) : {},
     productProfile: profile ? JSON.parse(JSON.stringify(profile)) : {},
     approach: _homeApproach,
@@ -579,6 +588,52 @@ function _homeDoLaunch(){
     }),
     launchedAt: Date.now()
   };
+}
+
+// ── Guided Launch (v9.15) — second entry path from the same Home setup ──
+// Reuses homeLaunch()'s exact preconditions (button is disabled by
+// _homeUpdateLaunchBtn() otherwise, but this guard covers direct invocation)
+// and the same sessionContext snapshot _homeDoLaunch() builds — hands off to
+// guided-launch.js rather than switching to the Discovery Map tab/generate().
+function homeGuidedLaunch(){
+  if(typeof currentUserRole!=='undefined'&&currentUserRole==='readonly'){
+    _homeSetError('<i class="ti ti-alert-triangle" style="font-size:11px;color:#BA7517;" aria-hidden="true"></i> <span style="color:#BA7517;font-weight:400;">Setup is disabled for view only access</span>');
+    return;
+  }
+  _homeSetError('');
+  _homeSetCondError('');
+
+  if(_homeApproach==='capability-based'&&_homeMode==='manual'&&_homeManualList.length===0){
+    _homeSetCondError('Upload your capability list to continue.');
+    const box=document.getElementById('home-sdocs-box');
+    if(box) box.scrollIntoView({behavior:'smooth',block:'center'});
+    return;
+  }
+
+  if(sessionActive){
+    homeClearSession();
+  }
+
+  if(document.getElementById('demo-badge')){
+    if(typeof clearDemoMode==='function') clearDemoMode();
+  }
+  _isDemoSession=false;
+
+  const glCtx=_homeBuildSessionContext();
+  if(typeof glCreateAndOpen==='function'){
+    glCreateAndOpen(glCtx);
+  }
+}
+
+function _homeDoLaunch(){
+  // Clear demo if active
+  if(document.getElementById('demo-badge')){
+    if(typeof clearDemoMode==='function') clearDemoMode();
+  }
+
+  _isDemoSession=false;
+
+  sessionContext=_homeBuildSessionContext();
 
   sessionActive=true;
   _activeSessionOwnerId=(typeof currentUser!=='undefined'&&currentUser)?currentUser.id:null;
@@ -614,7 +669,15 @@ function _homeDoLaunch(){
 }
 
 // ── Clear session ──
-function homeClearSession(){
+// p_releaseSessionId (optional, v14 code-review fix) — the session id to
+// release occupancy for, passed explicitly by a caller that nulls
+// _activeSessionId BEFORE calling this function (e.g. homeSessionDeleteConfirm(),
+// which does so deliberately so the exit-save below is correctly skipped for
+// an already-deleted session) — without it, this function's own capture a
+// few lines down would read a global the caller already cleared. Every
+// other caller, which never nulls the global first, is unaffected — the
+// fallback below still reads it live exactly as before.
+function homeClearSession(p_releaseSessionId){
   // Save current session before wiping — must happen before any state is cleared.
   // v8.150 fix (Issue 2, corrected — explicit sign-off obtained for this
   // edit per this function's own standing rule): the v8.149 attempt at
@@ -637,7 +700,12 @@ function homeClearSession(){
     && typeof _lsSessionMightBeUnsafeToOverwrite === 'function'
     && _lsSessionMightBeUnsafeToOverwrite(_activeSessionId));
   if(!_unsafeToOverwrite && !_isDemoSession && typeof sessionStoreSave==='function' && typeof _activeSessionId!=='undefined' && _activeSessionId){
-    sessionStoreSave(_activeSessionId);
+    // v9.12.05: expectedBlock=true — this save is EXPECTED to be blocked
+    // when the exiting session was view-only (including one demoted by the
+    // Session Occupancy Lock); a quieter console.log is correct here, not
+    // console.error's default alarm. See sessionStoreSave()'s own comment
+    // for why this isn't a blanket change affecting other callers.
+    sessionStoreSave(_activeSessionId, true);
   }
   // Phase 3c (v8.126) — explicit sign-off obtained separately before this
   // edit, per this project's own rule that this function requires that.
@@ -645,6 +713,30 @@ function homeClearSession(){
   // call even if no watch is running (no-op), and safe to call twice in a
   // row (e.g. kickout already stopped it before calling this) — idempotent.
   if(typeof _lsSessionWatchStop==='function') _lsSessionWatchStop();
+  // v9.12 — explicit sign-off obtained separately before this edit, per
+  // this function's own standing rule. Session id captured into a local
+  // BEFORE _activeSessionId is nulled below — releasing after the null
+  // would release nothing. Heartbeat stopped FIRST, release called SECOND
+  // (matches the adversarial-review-confirmed ordering: a late-arriving
+  // heartbeat tick landing after release has already run must not be able
+  // to silently re-write occupant_at for a session this tab just left —
+  // stopAndWait() inside _lsOccupancyHeartbeatStop() guarantees any
+  // in-flight tick has fully settled before this function proceeds to
+  // release). Fire-and-forget on the release call itself — this function
+  // doesn't await network calls elsewhere either, and a failed release
+  // still self-heals via the 60-second staleness window in
+  // claim_session_occupancy.
+  var _occSessionIdToRelease = p_releaseSessionId || ((typeof _activeSessionId!=='undefined') ? _activeSessionId : null);
+  if(typeof _lsOccupancyHeartbeatStop==='function'){
+    var _occStopPromise = _lsOccupancyHeartbeatStop();
+    if(_occStopPromise && typeof _occStopPromise.then==='function'){
+      _occStopPromise.then(function(){
+        if(_occSessionIdToRelease && typeof _lsReleaseSessionOccupancy==='function') _lsReleaseSessionOccupancy(_occSessionIdToRelease);
+      });
+    } else if(_occSessionIdToRelease && typeof _lsReleaseSessionOccupancy==='function') {
+      _lsReleaseSessionOccupancy(_occSessionIdToRelease);
+    }
+  }
   _activeSessionId=null;
   // Phase 5: clear alongside _activeSessionId — no session active means
   // nothing is "shared" either. Prevents a stale true carrying over into
@@ -682,18 +774,31 @@ function homeClearSession(){
   miProductMode='market';
   miCapabilities=[];
   miSelectedCapNames=new Set();
+  if(typeof miLeftCollapsed!=='undefined') miLeftCollapsed=false;
   piMode=false;
   piFirstBuilt=false;
   piPlan=null;
+  // piPlans/piBacklogStoryIds/_piActivePlanId (Release Canvas) and
+  // piReadinessPlans (Adoption Readiness) were missing from this reset —
+  // _sessionStoreBuildSnapshot() reads these live globals unconditionally
+  // when a new session is created, so a previous session's release/readiness
+  // data got baked into the brand-new session's own snapshot before the user
+  // had ever touched those tabs.
+  piPlans=[];
+  piBacklogStoryIds=[];
+  _piActivePlanId=null;
+  piReadinessPlans=[];
   piSquads=[{name:(appSettings.defaultSquadName||'Squad')+' 1',capacity:appSettings.defaultSquadCapacity||80}];
   piScVersion=null;
   piInputs={type:'caps-only',piGoal:'',constraints:'',parsedCaps:[],parsedFeatures:[],carryForwardItems:[],overlapResolutions:{}};
   mmBannerCollapsed=false;
   ddGenerated=false;
+  if(typeof window!=='undefined') window._ddRows=[];
   // feature-canvas.js globals
   scCanvas=[];
   if(typeof protoStore!=='undefined') protoStore={};
   if(typeof newScProtoView!=='undefined') newScProtoView=false;
+  if(typeof newScNavCollapsed!=='undefined') newScNavCollapsed=false;
   if(typeof scSelectedIds!=='undefined') scSelectedIds=new Set();
   if(typeof scPanelFeatureId!=='undefined') scPanelFeatureId=null;
   if(typeof scCapNavFilter!=='undefined') scCapNavFilter=null;
@@ -722,14 +827,19 @@ function homeClearSession(){
   // Hide all non-home tabs and clear any data-home-hidden flags
   // data-home-hidden is set by switchTab('home') to track which tabs were visible.
   // If not cleared here, switchTab('mm') on the new session will re-show session 1's tabs.
-  ['tab-mm','tab-cc','tab-mi','tab-la','tab-fc'].forEach(function(id){
+  ['tab-mm','tab-cc','tab-mi','tab-la','tab-fc','tab-gl'].forEach(function(id){
     const el=document.getElementById(id);
     if(el){ el.style.display='none'; el.removeAttribute('data-home-hidden'); }
   });
-  ['tab-sc','tab-pi'].forEach(function(id){
+  ['tab-sc','tab-pi','tab-arp'].forEach(function(id){
     const el=document.getElementById(id);
     if(el){ el.classList.remove('revealed'); el.removeAttribute('data-home-hidden'); }
   });
+  if(typeof opUnlocked!=='undefined')opUnlocked=false;
+  const tabOpResetEl=document.getElementById('tab-op');
+  if(tabOpResetEl)tabOpResetEl.style.display='none';
+  const tabRaResetEl=document.getElementById('tab-ra');
+  if(tabRaResetEl)tabRaResetEl.classList.remove('revealed');
 
   // Reset tab badges
   if(typeof fcUpdateTabBadge==='function') fcUpdateTabBadge();
@@ -747,9 +857,63 @@ function homeClearSession(){
   const miTabContent=document.getElementById('mi-tab');
   if(miTabContent){miTabContent.innerHTML='';miTabContent.classList.remove('on');}
 
+  // Clear Guided Launch tab content + its module state (v9.15.01, Item 20).
+  // homeClearSession() is the one shared cleanup every session-transition
+  // path already funnels through (Home nav, resume, new launch) — but it
+  // predates guided-launch.js and had no gl*-awareness at all. Without this,
+  // an abandoned (never-finalized) Guided Launch session's in-memory state
+  // and rendered DOM survive indefinitely, since an unfinalized session
+  // never sets sessionActive=true and so never triggers this function via
+  // switchTab('home')'s own guard — confirmed via live repro, not just code
+  // reading (see item20-repro-results.md).
+  const glTabContent=document.getElementById('gl-tab');
+  if(glTabContent){glTabContent.innerHTML='';glTabContent.classList.remove('on');}
+  if(typeof glResetState==='function') glResetState();
+
+  // v9.16 — Requirement Agent, same reasoning as glResetState() above:
+  // per-session in-memory state (raConversations, active/open conversation
+  // pointers) must not survive into whichever session is opened next.
+  const raTabContent=document.getElementById('ra-tab');
+  if(raTabContent){raTabContent.innerHTML='';raTabContent.classList.remove('on');}
+
+  // v14 product decision (post-v9.27 review) — this function is an ordinary
+  // session PAUSE/switch, never a permanent delete: the outgoing session's
+  // raConversations and their documents must survive untouched in the
+  // database for later resume. Calls the NON-destructive
+  // raClearInMemoryState() (view-only reset, no RPCs, no database writes) —
+  // NOT raResetState(), which now does destructive document cleanup and is
+  // reachable only from kpi-tree.js's generateConfirmed() (Regenerate
+  // Discovery Map), the one flow where every one of this session's RA
+  // conversations is genuinely, permanently gone. An earlier build of this
+  // feature called raResetState() here too, on the mistaken premise that
+  // every raConversations wipe is equally permanent — it isn't: this
+  // function's own sessionStoreSave() call, above, already persisted the
+  // outgoing session's real conversations+documents before this point, so
+  // calling the destructive path here would tombstone documents that are
+  // still fully reachable the next time this same session is resumed.
+  //
+  // Round-2 code-review fix: MUST run BEFORE the leak-detection guard a few
+  // lines down, not after — an earlier version of this fix placed it last
+  // in the function (a leftover from when this call site was still the
+  // async, network-calling raResetState(), where trailing placement
+  // actually mattered). raClearInMemoryState() is synchronous and clears
+  // raConversations directly; _ssAssertCleanSlate() reads that same global
+  // via _sessionStoreBuildSnapshot(). Placed after it, the guard always
+  // found raConversations non-empty for any session that had used
+  // Requirement Agent — a permanent false positive on every single New
+  // Session/product-change/resume transition, not the rare real-bug signal
+  // this guard exists to catch.
+  if(typeof raClearInMemoryState==='function') raClearInMemoryState();
+
   // Re-show lock message
   const lock=document.getElementById('home-tab-lock');
   if(lock) lock.style.display='flex';
+
+  // Leak-detection regression guard (session-store.js) — verifies every
+  // session-content field the resets above are supposed to have zeroed is
+  // actually empty; console.errors by name if not, catching the exact class
+  // of bug that shipped piPlans/piReadinessPlans/window._ddRows with no reset.
+  if(typeof _ssAssertCleanSlate==='function') _ssAssertCleanSlate();
 
   console.log('Session cleared — ready for new launch');
 }
@@ -788,28 +952,24 @@ function _homeSetCondError(msg){
   el.innerHTML=msg;
 }
 
-// ── Session summary panel for mm tab ──
-// Renders a read-only session card into #left-panel when sessionActive
-function mmRenderSessionPanel(){
-  const lp=document.getElementById('left-panel');
-  if(!lp) return;
-  const sc=typeof sessionContext!=='undefined'?sessionContext:null;
-  if(!sc){lp.classList.add('sc-hidden');return;}
-
+// ── Shared session-summary content builder (v9.15.02) ──
+// Extracted from mmRenderSessionPanel() so Guided Launch's own left panel
+// (#gl-left, guided-launch.js) can show the SAME real Company/Product/Type/
+// Industry/Approach/Mode/Docs content, rather than a separate hand-built
+// lookalike — this was only possible because Guided Launch sessions are now
+// real sessionContext-bearing sessions from creation (v9.15.02 unification),
+// not a second, empty-shell record. Returns the inner HTML only (the
+// .form-scroll/.gl-left-body content) — each caller supplies its own header/
+// collapse chrome, since those differ (DM's shared panelOpen/icon-exp/
+// icon-col vs Guided Launch's own glPanelOpen/icon-gl-exp/icon-gl-col).
+function _mmBuildSessionSummaryHtml(sc){
+  if(!sc) return '';
   const p=sc.productProfile||{};
   const cp=sc.companyProfile||{};
   const approachLabel=sc.approach==='outcome-based'?'Outcome Metrics':'Process Area';
   const modeLabel=sc.generationMode==='ai-generated'?'AI Generated':'Manual';
   const companyName=cp.companyName||'';
 
-  // Restore panel open state (may have been collapsed before navigating away)
-  const isCollapsed=lp.classList.contains('collapsed');
-  // Ensure panelOpen state is synced — session panel always starts expanded
-  if(typeof panelOpen!=='undefined') panelOpen=true;
-  lp.classList.remove('collapsed');
-  lp.classList.remove('sc-hidden');
-
-  // Pre-compute Docs chips HTML (no leading divider — Docs is now in the config group)
   var _docsHtml='';
   if(sc.sessionDocs&&sc.sessionDocs.length>0){
     var _dtL={prd:'PRD',rfp:'RFP',research:'Research',feedback:'VoC',roadmap:'Roadmap',strategy:'Strategy',backlog:'Backlog',other:'Other'};
@@ -818,7 +978,6 @@ function mmRenderSessionPanel(){
     _docsHtml='<div class="mm-sp-row"><span class="mm-sp-key">Docs</span><span class="mm-sp-val" style="white-space:normal;display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end;">'+_chips+'</span></div>';
   }
 
-  // Pre-compute Custom Value Chain block (always expanded, shown only if set)
   var _cvcHtml='';
   if(sc.customValueChain){
     _cvcHtml='<div class="mm-sp-fl-block">'
@@ -827,7 +986,6 @@ function mmRenderSessionPanel(){
       +'</div>';
   }
 
-  // Pre-compute Additional Context block (collapsed by default, shown only if set)
   var _ctxHtml='';
   if(sc.additionalContext){
     _ctxHtml='<div class="mm-sp-fl-block">'
@@ -839,10 +997,38 @@ function mmRenderSessionPanel(){
       +'</div>';
   }
 
-  // Combined launch inputs section: only render divider when at least one field is present
   var _launchInputsHtml=(_cvcHtml||_ctxHtml)
     ?('<div class="mm-sp-divider"></div>'+_cvcHtml+_ctxHtml)
     :'';
+
+  return `
+      ${companyName?'<div class="mm-sp-row"><span class="mm-sp-key">Company</span><span class="mm-sp-val">'+e(companyName)+'</span></div>':''}
+      <div class="mm-sp-row"><span class="mm-sp-key">Product</span><span class="mm-sp-val">${e(p.productName||'-')}</span></div>
+      <div class="mm-sp-row"><span class="mm-sp-key">Type</span><span class="mm-sp-val">${e(p.productType||'-')}</span></div>
+      <div class="mm-sp-row"><span class="mm-sp-key">Industry</span><span class="mm-sp-val">${e(p.industry||cp.companyIndustry||'-')}</span></div>
+      <div class="mm-sp-divider"></div>
+      <div class="mm-sp-row"><span class="mm-sp-key">Approach</span><span class="mm-sp-badge">${approachLabel}</span></div>
+      <div class="mm-sp-row"><span class="mm-sp-key">Mode</span><span class="mm-sp-val">${modeLabel}</span></div>
+      ${sc.marketIntelligence?'<div class="mm-sp-row"><span class="mm-sp-key">Market Intel</span><span class="mm-sp-badge mm-sp-badge-green">On</span></div>':''}
+      ${_docsHtml}
+      ${p.icp?'<div class="mm-sp-divider"></div><div class="mm-sp-row mm-sp-row-wrap"><span class="mm-sp-key">ICP</span><span class="mm-sp-val">'+e(p.icp)+'</span></div>':''}
+      ${_launchInputsHtml}`;
+}
+
+// ── Session summary panel for mm tab ──
+// Renders a read-only session card into #left-panel when sessionActive
+function mmRenderSessionPanel(){
+  const lp=document.getElementById('left-panel');
+  if(!lp) return;
+  const sc=typeof sessionContext!=='undefined'?sessionContext:null;
+  if(!sc){lp.classList.add('sc-hidden');return;}
+
+  const p=sc.productProfile||{};
+
+  // Restore panel collapsed state (may have been collapsed before navigating away)
+  const isCollapsed=lp.classList.contains('collapsed');
+  if(typeof panelOpen!=='undefined') panelOpen=!isCollapsed;
+  lp.classList.remove('sc-hidden');
 
   lp.innerHTML=`
     <div class="ph">
@@ -854,22 +1040,12 @@ function mmRenderSessionPanel(){
         )}</div>
       </div>
       <button class="collapse-btn" onclick="togglePanel()" title="Toggle panel">
-        <svg id="icon-exp" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/><polyline points="21 18 15 12 21 6"/></svg>
-        <svg id="icon-col" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display:none"><polyline points="9 18 15 12 9 6"/><polyline points="3 18 9 12 3 6"/></svg>
+        <svg id="icon-exp" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="${isCollapsed?'display:none':''}"><polyline points="15 18 9 12 15 6"/><polyline points="21 18 15 12 21 6"/></svg>
+        <svg id="icon-col" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="${isCollapsed?'':'display:none'}"><polyline points="9 18 15 12 9 6"/><polyline points="3 18 9 12 3 6"/></svg>
       </button>
     </div>
     <div class="form-scroll" style="padding:12px 14px;overflow:hidden;">
-      ${companyName?'<div class="mm-sp-row"><span class="mm-sp-key">Company</span><span class="mm-sp-val">'+e(companyName)+'</span></div>':''}
-      <div class="mm-sp-row"><span class="mm-sp-key">Product</span><span class="mm-sp-val">${e(p.productName||'-')}</span></div>
-      <div class="mm-sp-row"><span class="mm-sp-key">Type</span><span class="mm-sp-val">${e(p.productType||'-')}</span></div>
-      <div class="mm-sp-row"><span class="mm-sp-key">Industry</span><span class="mm-sp-val">${e(p.industry||cp.companyIndustry||'-')}</span></div>
-      <div class="mm-sp-divider"></div>
-      <div class="mm-sp-row"><span class="mm-sp-key">Approach</span><span class="mm-sp-badge">${approachLabel}</span></div>
-      <div class="mm-sp-row"><span class="mm-sp-key">Mode</span><span class="mm-sp-val">${modeLabel}</span></div>
-      ${sc.marketIntelligence?'<div class="mm-sp-row"><span class="mm-sp-key">Market Intel</span><span class="mm-sp-badge mm-sp-badge-green">On</span></div>':''}
-      ${_docsHtml}
-      ${p.icp?'<div class="mm-sp-divider"></div><div class="mm-sp-row mm-sp-row-wrap"><span class="mm-sp-key">ICP</span><span class="mm-sp-val">'+e(p.icp)+'</span></div>':''}
-      ${_launchInputsHtml}
+      ${_mmBuildSessionSummaryHtml(sc)}
     </div>`;
 }
 
@@ -1251,7 +1427,15 @@ function _homeRenderPinnedBanner(sess){
   // all — without this fallback, a real owner's own old session would
   // incorrectly hide the menu from THEM. Confirmed direction from
   // stakeholder: non-owner sees NO trigger at all, not an empty menu.
-  const _isOwner=!sess.userId||sess.userId===(typeof currentUser!=='undefined'&&currentUser?currentUser.id:null);
+  // Read Only role blocks the same actions the DB's RLS already blocks
+  // (Rename/Delete are UPDATE/DELETE) - without this, a read-only user
+  // viewing their OWN pre-downgrade sessions still passes the raw
+  // ownership check below and sees a live-looking 3-dot menu/rename
+  // target that silently no-ops (or ghost-deletes then reappears on
+  // next sync) server-side. See _homeApplyReadOnlyState()'s identical
+  // currentUserRole check for the Setup panel's equivalent gate.
+  const _isReadOnlyUser=(typeof _ssIsReadOnlyRole==='function')&&_ssIsReadOnlyRole();
+  const _isOwner=!_isReadOnlyUser&&(!sess.userId||sess.userId===(typeof currentUser!=='undefined'&&currentUser?currentUser.id:null));
   const _dotsBtn=_isOwner?'<button class="tm-dots" aria-label="Session actions" aria-expanded="false" style="position:absolute;top:6px;right:6px;" onclick="event.stopPropagation();homeToggleSessMenu(this,\''+sess.id+'\')"><i class="ti ti-dots-vertical" aria-hidden="true"></i></button>':'';
 
   let html='<div class="home-pin-banner" onclick="homeSessionResume(\''+sess.id+'\')">';
@@ -1279,10 +1463,11 @@ function _homeRenderPinnedBanner(sess){
   html+='<div class="home-sess-divider"></div>';
   html+='<div class="home-pin-bottom">';
   html+='<div class="home-sess-counts">';
+  html+='<div class="home-sess-ct"><i class="ti ti-file-description" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.briefs||0)+'</span> briefs</div>';
   html+='<div class="home-sess-ct"><i class="ti ti-layers-subtract" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.caps||0)+'</span> caps</div>';
   html+='<div class="home-sess-ct"><i class="ti ti-writing" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.features||0)+'</span> features</div>';
   html+='<div class="home-sess-ct"><i class="ti ti-list-details" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.stories||0)+'</span> stories</div>';
-  if(counts.sprintActive) html+='<div class="home-sess-ct"><i class="ti ti-calendar-event" aria-hidden="true"></i><span class="home-sess-ct-val">'+e(counts.sprintActive)+'</span></div>';
+  html+='<div class="home-sess-ct"><i class="ti ti-rocket" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.releases||0)+'</span> releases</div>';
   html+='</div>';
   html+='<button class="home-sess-resume-link" onclick="event.stopPropagation();homeSessionResume(\''+sess.id+'\')"><i class="ti ti-player-play" aria-hidden="true"></i> Resume &#8594;</button>';
   html+='</div>'; // pin-bottom
@@ -1306,7 +1491,15 @@ function _homeRenderSessionCard(sess, isLastActive){
   // full rationale. Both render functions must apply this consistently,
   // since they render the same underlying session data in two different
   // card layouts (pinned banner vs. regular grid card).
-  const _isOwner=!sess.userId||sess.userId===(typeof currentUser!=='undefined'&&currentUser?currentUser.id:null);
+  // Read Only role blocks the same actions the DB's RLS already blocks
+  // (Rename/Delete are UPDATE/DELETE) - without this, a read-only user
+  // viewing their OWN pre-downgrade sessions still passes the raw
+  // ownership check below and sees a live-looking 3-dot menu/rename
+  // target that silently no-ops (or ghost-deletes then reappears on
+  // next sync) server-side. See _homeApplyReadOnlyState()'s identical
+  // currentUserRole check for the Setup panel's equivalent gate.
+  const _isReadOnlyUser=(typeof _ssIsReadOnlyRole==='function')&&_ssIsReadOnlyRole();
+  const _isOwner=!_isReadOnlyUser&&(!sess.userId||sess.userId===(typeof currentUser!=='undefined'&&currentUser?currentUser.id:null));
   const _dotsBtn=_isOwner?'<button class="tm-dots" aria-label="Session actions" aria-expanded="false" style="position:absolute;top:6px;right:6px;" onclick="event.stopPropagation();homeToggleSessMenu(this,\''+sess.id+'\')"><i class="ti ti-dots-vertical" aria-hidden="true"></i></button>':'';
 
   let html='<div class="home-sess-card'+(isLastActive?' home-sess-card-last-active':'')+(isActive?' home-sess-card-active':'')+'" onclick="homeSessionResume(\''+sess.id+'\')">';
@@ -1334,11 +1527,11 @@ function _homeRenderSessionCard(sess, isLastActive){
   html+='<div class="home-sess-divider"></div>';
   html+='<div class="home-sess-bottom">';
   html+='<div class="home-sess-counts-grid">';
+  html+='<div class="home-sess-ct"><i class="ti ti-file-description" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.briefs||0)+'</span> briefs</div>';
   html+='<div class="home-sess-ct"><i class="ti ti-layers-subtract" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.caps||0)+'</span> caps</div>';
   html+='<div class="home-sess-ct"><i class="ti ti-writing" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.features||0)+'</span> features</div>';
   html+='<div class="home-sess-ct"><i class="ti ti-list-details" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.stories||0)+'</span> stories</div>';
-  html+='<div class="home-sess-ct"><i class="ti ti-calendar-event" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.sprintActive||'&mdash;')+'</span></div>';
-  html+='<div class="home-sess-ct"><i class="ti ti-files" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.docs||0)+'</span> docs</div>';
+  html+='<div class="home-sess-ct"><i class="ti ti-rocket" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.releases||0)+'</span> releases</div>';
   html+='</div>';
   html+='<div class="home-sess-footer-row">';
   html+=_homeSessMetaLine(sess);
@@ -1351,12 +1544,16 @@ function _homeRenderSessionCard(sess, isLastActive){
 
 function _homeGetStagePill(stage){
   const map={
-    'PI Canvas':    ['home-sess-pill-stage-pi','ti-calendar-event'],
+    'Outcome Pulse':     ['home-sess-pill-stage-op','ti-activity'],
+    'Adoption Readiness':['home-sess-pill-stage-arp','ti-checklist'],
+    'Release Canvas':    ['home-sess-pill-stage-pi','ti-calendar-event'],
     'Story Canvas': ['home-sess-pill-stage-sc','ti-list-details'],
     'Feature Canvas':['home-sess-pill-stage-fc','ti-writing'],
     'Capability Canvas':['home-sess-pill-stage-cc','ti-layers-subtract'],
+    'Requirement Agent':['home-sess-pill-stage-ra','ti-clipboard-text'],
     'Discovery Map':['home-sess-pill-stage-dm','ti-hierarchy-2'],
-    'Market Intelligence':['home-sess-pill-stage-mi','ti-world-search']
+    'Market Intelligence':['home-sess-pill-stage-mi','ti-world-search'],
+    'Guided Launch':['home-sess-pill-stage-gl','ti-message-2']
   };
   const s=stage||'Discovery Map';
   const cfg=map[s]||map['Discovery Map'];
@@ -1380,6 +1577,11 @@ function _homeRelTime(ts){
 
 // ── Session actions ──
 
+// v9.15.02 — every session, Guided-Launch-originated or not, is a real
+// mt_sessions row from creation now, so every resume goes through the same
+// sessionStoreRestore() path. That function checks meta.intakeStatus itself
+// and applies Guided Launch's chat/draft rendering when relevant — this
+// function no longer needs to know or care where a session came from.
 function homeSessionResume(sessionId){
   if(typeof sessionStoreRestore==='function') sessionStoreRestore(sessionId);
 }
@@ -1398,10 +1600,19 @@ function homeSessionDeleteConfirm(sessionId, sessionName, isShared){
       const isActive=(typeof _activeSessionId!=='undefined'&&_activeSessionId===sessionId);
       if(typeof sessionStoreDelete==='function') sessionStoreDelete(sessionId);
       if(isActive){
-        // Deleted the active session — clear live state without saving
+        // Deleted the active session — clear live state without saving.
+        // v14 code-review fix — sessionId passed into homeClearSession()
+        // explicitly, since this caller deliberately nulls _activeSessionId
+        // BEFORE calling it (so homeClearSession()'s own exit-save is
+        // correctly skipped for an already-deleted session) — that ordering
+        // otherwise starved homeClearSession()'s own occupancy-release
+        // capture of the real session id. Confirmed non-exploitable in this
+        // specific path (the row is already deleted, so occupancy fields
+        // are gone via cascade too), but the pattern shouldn't depend on
+        // every caller getting this ordering right by accident.
         _activeSessionId=null;
         _activeSessionIsShared=false;
-        if(typeof homeClearSession==='function') homeClearSession();
+        if(typeof homeClearSession==='function') homeClearSession(sessionId);
       }
       // Full re-render handles empty state restoration
       homeRenderSessionLibrary();
@@ -1622,7 +1833,12 @@ async function _homeCallAIRecs(sessions, token) {
   const hostedProxyUrl = (typeof PROXY_URL !== 'undefined' && PROXY_URL) ? PROXY_URL : 'https://product-diagnostics-proxy.onrender.com/api/anthropic';
   const proxyUrl = isLocal ? LOCAL_PROXY : hostedProxyUrl;
 
-  const model = (typeof resolveModel==='function')?resolveModel(null,'ai-recommendations'):'claude-sonnet-4-6';
+  // v9.13: use the decision-carrying resolver so this call site's usage
+  // event gets the same real provenance (settingsMode/selectionRule) as
+  // every callAPI()-routed call, instead of just a bare model string.
+  const _aiRecsDecision=(typeof resolveModelDecision==='function')?resolveModelDecision(null,'ai-recommendations',null):{model:'claude-sonnet-4-6',settingsMode:'optimized',settingsModel:null,selectionRule:'optimized_caller_default'};
+  const model = _aiRecsDecision.model;
+  const _aiRecsClientCallId=(typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():(Date.now()+'-'+Math.random().toString(36).slice(2));
 
   // Retrieve JWT token — proxy requires X-Auth-Token on hosted requests.
   // authGetFreshToken() guarantees a non-expired token (v8.33 fix).
@@ -1645,13 +1861,23 @@ async function _homeCallAIRecs(sessions, token) {
     body: JSON.stringify({
       model: model, max_tokens: 600, system: sys, messages: [{ role: 'user', content: usr }],
       _caller: 'ai-recommendations',
-      company_id: (function(){ try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || ''; } catch(e) { return ''; } })()
+      company_id: (function(){ try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || ''; } catch(e) { return ''; } })(),
+      // v9.13: AI usage-tracking fields — this call site is a separate fetch
+      // path from callAPI() (see the routing note above), so these fields
+      // are added here explicitly rather than inherited from that function.
+      product_id:(typeof activeProfileId!=='undefined')?activeProfileId:null,
+      session_id:(typeof _activeSessionId!=='undefined')?_activeSessionId:null,
+      client_call_id:_aiRecsClientCallId,
+      settings_mode:_aiRecsDecision.settingsMode,
+      settings_model:_aiRecsDecision.settingsModel,
+      selection_rule:_aiRecsDecision.selectionRule,
+      prompt_version:(typeof PROMPT_VERSIONS!=='undefined'&&PROMPT_VERSIONS['ai-recommendations'])?PROMPT_VERSIONS['ai-recommendations']:null
     })
   })
   .then(function(r) { return r.json(); })
   .then(function(data) {
     if (data.error) throw new Error((typeof _pgtAnthropicErrorMessage==='function')?_pgtAnthropicErrorMessage(data.error):(data.error.message||'Unknown error'));
-    const raw = data.content && data.content[0] ? data.content[0].text : '[]';
+    const raw = data.text || '[]';
     const clean = raw.replace(/```json|```/g, '').trim();
     const recs = JSON.parse(clean);
     // Cache result
@@ -1701,15 +1927,26 @@ function _homeRenderAIRecs(recs, sessions) {
   el.innerHTML = html;
 }
 
-function homeAIRecClick(sessionId, targetTab) {
+async function homeAIRecClick(sessionId, targetTab) {
   if (!sessionId) return;
-  // Restore session then navigate to target tab
+  // v9.12.02 fix: previously a bare sessionStoreRestore(sessionId) call
+  // followed by a fixed setTimeout(50ms) before switchTab — found via
+  // adversarial review to be unreliable now that sessionStoreRestore() can
+  // include a real network round-trip for the occupancy claim (v9.12), on
+  // top of the pre-existing pre-fetch round-trip — both can easily exceed
+  // 50ms, and if the timer fires before restore finishes, switchTab would
+  // run against a session that hasn't finished loading, or against a
+  // DIFFERENT session if the user clicked elsewhere in the interim.
+  // Awaiting the restore directly removes the guesswork; the extra
+  // _activeSessionId check guards against exactly that "user switched to a
+  // different session while this one was still restoring" case — if a
+  // newer restore has already taken over, this stale continuation must not
+  // force a tab switch on someone else's now-active session.
   if (typeof sessionStoreRestore === 'function') {
-    sessionStoreRestore(sessionId);
-    // After restore, switchTab to specific target
-    setTimeout(function() {
-      if (typeof switchTab === 'function') switchTab(targetTab);
-    }, 50);
+    await sessionStoreRestore(sessionId);
+    if (_activeSessionId === sessionId && typeof switchTab === 'function') {
+      switchTab(targetTab);
+    }
   }
 }
 

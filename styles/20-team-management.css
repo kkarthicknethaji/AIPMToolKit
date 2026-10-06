@@ -2,7 +2,7 @@
 
 .tm-row {
   display: grid;
-  grid-template-columns: 1.6fr 2fr 1.1fr 1.1fr 40px;
+  grid-template-columns: 1.4fr 1.7fr 0.95fr 0.9fr 0.9fr 40px;
   align-items: center;
   padding: 10px 14px;
   border-bottom: 0.5px solid var(--divider);
@@ -35,6 +35,8 @@
 .tm-badge-active   { background: #EAF3DE;            color: #27500A; }
 .tm-badge-disabled { background: var(--card);        color: #444441; }
 .tm-badge-pending  { background: #FAEEDA;            color: #633806; }
+.tm-badge-full-suite    { background: var(--card);      color: #5A6472; border: 1px solid var(--divider); }
+.tm-badge-control-tower { background: var(--green-pale); color: var(--green); }
 
 .tm-dots {
   width: 24px; height: 24px;
@@ -56,6 +58,7 @@
 .tm-menu-item {
   padding: 8px 12px;
   font-size: 11px;
+  font-weight: 600;
   color: var(--t2);
   display: flex; align-items: center; gap: 8px;
   cursor: pointer;
@@ -68,6 +71,59 @@
 .tm-menu-item-danger:hover, .tm-menu-item-danger:focus {
   background: #FCEBEB;
   color: var(--red);
+}
+
+/* Static (non-row-bound) kebab menu container - Feature Canvas toolbar
+   consolidation and any future static-trigger kebab reuse this instead of
+   each caller inlining its own wrapper style. */
+.tm-menu-static {
+  width: 180px;
+  background: #fff;
+  border: 0.5px solid var(--divider);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.12);
+  overflow: hidden;
+}
+.tm-menu-item-expand {
+  display: flex; align-items: center;
+}
+.tm-menu-item-expand .ti-chevron-right {
+  font-size: 10px;
+  color: var(--t3);
+}
+/* v9.25.03/v9.25.04 — pin the row's trailing element to the right via
+   margin instead of justify-content:space-between on .tm-menu-item-expand
+   itself: with 3 flat flex children (icon, text, trailing element) and no
+   wrapping span, space-between distributed leftover width into BOTH gaps,
+   inflating the icon-text spacing past the intended 8px .tm-menu-item gap.
+   Targets :last-child generically (not .ti-chevron-right specifically) so
+   any future .tm-menu-item-expand row's trailing element gets this for
+   free, not just the two rows that happen to use a chevron today. */
+.tm-menu-item-expand > *:last-child {
+  margin-left: auto;
+}
+/* Drill-in submenu - replaces the open popover's own content in place
+   (same DOM node, same position) rather than opening a side flyout. */
+.tm-submenu-standalone {
+  width: 180px;
+  background: #fff;
+  border: 0.5px solid var(--divider);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.12);
+  overflow: hidden;
+}
+.tm-submenu-standalone .tm-submenu-back {
+  padding: 8px 12px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--t3);
+  cursor: pointer;
+  display: flex; align-items: center; gap: 5px;
+  border-bottom: 1px solid var(--card);
+  font-family: var(--font);
+}
+.tm-submenu-standalone .tm-submenu-back:hover {
+  background: var(--card);
 }
 
 .tm-filter-row {

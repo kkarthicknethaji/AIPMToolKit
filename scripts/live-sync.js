@@ -108,6 +108,12 @@ function _lsRemoveLocalSessionEntry(sessionId){
   try {
     localStorage.removeItem(_SS_PREFIX + sessionId);
     if (typeof _ssRemoveFromIndex === 'function') _ssRemoveFromIndex(sessionId);
+    // v9.31: also drop the meta-index entry — this session is confirmed
+    // gone (unshared/deleted by someone else), not merely snapshot-evicted,
+    // so it must disappear from Home's list too, not just lose its cached
+    // content. Without this it would become a new, narrower version of the
+    // exact orphan problem the meta-index was introduced to avoid.
+    if (typeof _ssRemoveMetaEntry === 'function') _ssRemoveMetaEntry(sessionId);
   } catch(e) {}
 }
 
@@ -149,6 +155,146 @@ async function _lsPeekIfLocked(sessionId){
   } catch(e) {
     return { locked: false }; // fail open — the real, authoritative check still runs downstream
   }
+}
+
+// ============================================================
+// SESSION OCCUPANCY LOCK (v9.12) — "Single User Editing" mode
+// ============================================================
+// Distinct from the generation lock above (active_user_id/active_at/
+// active_user_name, acquire_generation_lock/release_generation_lock) —
+// that mechanism only protects the moment a generation call is running
+// (refreshed by a 22s heartbeat for that call's duration), not the whole
+// time a shared session is open for manual editing (adding a feature by
+// hand, editing story text, etc. — none of which ever calls the
+// generation lock at all). This section adds a second, fully independent
+// lease (occupant_user_id/occupant_at/occupant_user_name, claimed via
+// claim_session_occupancy/released via release_session_occupancy/kept
+// alive via heartbeat_session_occupancy) that covers the ENTIRE time a
+// session is open for edit under appSettings.collabEditMode==='single'.
+// Deliberately separate columns/RPCs from the generation lock — confirmed
+// via reading server.js that active_user_id/active_at are already treated
+// elsewhere in this app as generation-lock-specific (the admin
+// "delete team member" flow clears them explicitly as such); conflating
+// "someone is generating right now" with "someone has this session open"
+// would break that existing assumption.
+//
+// Design invariants:
+//   - Only ever relevant when _activeSessionIsShared, _activeSessionShareMode
+//     is 'edit', and appSettings.collabEditMode is 'single' — Multi mode and
+//     private sessions never touch any of this, zero added cost.
+//   - The claim RPC is atomic (claim-or-report-holder in one UPDATE), not a
+//     separate peek-then-write — closes the check-then-act race a naive
+//     two-step client-side approach would have.
+//   - The heartbeat requires the existing lease to still be unexpired
+//     before refreshing it — a heartbeat delayed by a sleeping laptop or a
+//     frozen background tab must NOT be able to resurrect an already-
+//     expired lease out from under a legitimate new claimant.
+//   - Fully independent timer/in-flight/seq state from the generation
+//     heartbeat (_startLockHeartbeat, api.js) — these two locks are
+//     conceptually unrelated even though structurally similar, and must
+//     never share a controller.
+//   - A stale sessionStoreRestore() continuation (user navigated away
+//     while a claim was still in flight) must release any claim it
+//     successfully-but-too-late acquired, never just abandon it — an
+//     abandoned successful claim would leave the session occupied by a
+//     tab that's no longer even looking at it.
+//   - Known, deliberately accepted limitation: the same authenticated user
+//     in two different browser tabs can both hold occupancy simultaneously
+//     (the claim RPC's own-user-reentrant branch permits this) — mirrors
+//     an already-accepted equivalent gap in the generation lock itself
+//     (documented in api.js as "does NOT solve true cross-device same-user
+//     concurrency"). Not solved here by deliberate scope decision.
+
+async function _lsClaimSessionOccupancy(sessionId){
+  try {
+    var client = _lsGetClient();
+    if (!client) return { claimed: false, occupantUserName: null };
+    var res = await client.rpc('claim_session_occupancy', { p_session_id: sessionId });
+    if (res.error || !res.data) return { claimed: false, occupantUserName: null };
+    return {
+      claimed: res.data.claimed === true,
+      occupantUserName: res.data.occupant_user_name || null,
+      reason: res.data.reason || null
+    };
+  } catch(e) {
+    console.warn('[live-sync] claim_session_occupancy failed:', e);
+    return { claimed: false, occupantUserName: null };
+  }
+}
+
+async function _lsReleaseSessionOccupancy(sessionId){
+  try {
+    var client = _lsGetClient();
+    if (!client || !sessionId) return;
+    var res = await client.rpc('release_session_occupancy', { p_session_id: sessionId });
+    if (res.error) console.warn('[live-sync] release_session_occupancy failed:', res.error.message);
+  } catch(e) {
+    console.warn('[live-sync] release_session_occupancy exception:', e);
+  }
+}
+
+// Single-flight heartbeat, structurally mirroring _startLockHeartbeat
+// (api.js) but with entirely separate state — no shared timer, in-flight
+// promise, or stopped flag between the two locks. onOccupancyLost is
+// called on a clean `false` return from the RPC (the lease genuinely
+// expired or was reassigned server-side, not a network error) — the
+// caller uses this to demote the session to view-only and toast.
+function _lsOccupancyHeartbeatStart(sessionId, onOccupancyLost){
+  var stopped = false, timer = null, inFlight = null;
+  async function beat(){
+    if (stopped) return;
+    inFlight = (async () => {
+      try {
+        var client = _lsGetClient();
+        if (!client) { stopped = true; onOccupancyLost(); return; }
+        var res = await client.rpc('heartbeat_session_occupancy', { p_session_id: sessionId });
+        if (res.error) {
+          // A single failed tick (network blip, transient RLS/auth hiccup) does
+          // NOT mean occupancy is lost — only a clean `false` data value does.
+          console.warn('[live-sync] occupancy heartbeat tick failed, state unknown, continuing:', res.error.message);
+        } else if (res.data === false) {
+          stopped = true;
+          onOccupancyLost();
+          return;
+        }
+      } catch(e) {
+        console.warn('[live-sync] occupancy heartbeat exception, continuing:', e);
+      } finally {
+        inFlight = null;
+      }
+      if (!stopped) timer = setTimeout(beat, 22000);
+    })();
+  }
+  timer = setTimeout(beat, 22000);
+  return {
+    async stopAndWait(){
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      if (inFlight) { try { await inFlight; } catch(e) {} }
+    }
+  };
+}
+
+// Module-level handle for the currently-running occupancy heartbeat, if
+// any — mirrors how the in-session watch (_lsSessionWatchStart/Stop below)
+// tracks its own lifecycle at module scope, so homeClearSession() and a
+// fresh sessionStoreRestore() call can both reliably stop whatever was
+// previously running without needing that handle threaded through.
+var _lsOccupancyHeartbeatHandle = null;
+var _lsOccupancySessionId = null;
+
+function _lsOccupancyHeartbeatStartTracked(sessionId, onOccupancyLost){
+  _lsOccupancyHeartbeatStop(); // idempotent — tears down any previous one first
+  _lsOccupancySessionId = sessionId;
+  _lsOccupancyHeartbeatHandle = _lsOccupancyHeartbeatStart(sessionId, onOccupancyLost);
+}
+
+async function _lsOccupancyHeartbeatStop(){
+  if (_lsOccupancyHeartbeatHandle) {
+    try { await _lsOccupancyHeartbeatHandle.stopAndWait(); } catch(e) {}
+    _lsOccupancyHeartbeatHandle = null;
+  }
+  _lsOccupancySessionId = null;
 }
 
 // ── 3a: Home poll ──
@@ -248,11 +394,19 @@ function _lsMergeHomeMetaEntry(row){
       id: row.id,
       name: row.name || 'Session',
       productName: row.product_name || '',
+      // v9.13.01: real product FK, requires product_id in the explicit
+      // .select() column list above (this query does not use select('*')).
+      productId: row.product_id || null,
       companyName: row.company_name || '',
       productType: row.product_type || '',
       approach: row.approach || '',
       lastTab: row.last_tab || 'mm',
       lastStage: row.last_stage || '',
+      // v9.15.02 — same denormalized read as every other field here; three
+      // independent DB-row-to-meta mapping sites in this codebase needed
+      // this identical addition (this one, sessionStoreSyncFromDB() in
+      // session-store.js, and _lsResumePreFetch() below in this file).
+      intakeStatus: row.intake_status || null,
       counts: row.counts || { caps:0, features:0, stories:0, sprintActive:null },
       createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
       savedAt: incomingSavedAt,
@@ -272,6 +426,11 @@ function _lsMergeHomeMetaEntry(row){
     var entry = { meta: meta, snapshot: existingSnapshot };
     localStorage.setItem(key, JSON.stringify(entry));
     if (!existing && typeof _ssAddToIndex === 'function') _ssAddToIndex(row.id);
+    // v9.31 code-review fix: sessionStoreList() now reads pgt_session_meta
+    // exclusively — without this, a teammate's new/renamed/re-shared session
+    // discovered by this poll would update the full blob and _SS_INDEX but
+    // stay invisible (or stale) on Home until an unrelated full sync ran.
+    if (typeof _ssSetMetaEntry === 'function') _ssSetMetaEntry(row.id, meta);
   } catch(e) {
     console.warn('[live-sync] home meta merge failed:', e);
   }
@@ -284,7 +443,7 @@ async function _lsHomeRunOnePollCycle(seq){
   if (!client) return;
   try {
     var res = await client.from('mt_sessions')
-      .select('id,user_id,company_id,is_shared,share_mode,name,product_name,company_name,product_type,approach,last_tab,last_stage,counts,created_at,saved_at,last_edited_by_name,active_user_id,active_at,active_user_name')
+      .select('id,user_id,company_id,is_shared,share_mode,name,product_name,product_id,company_name,product_type,approach,last_tab,last_stage,intake_status,counts,created_at,saved_at,last_edited_by_name,active_user_id,active_at,active_user_name')
       .eq('company_id', companyId);
     if (seq !== _lsHomePollSeq) return; // superseded while this fetch was in flight
     if (res.error) { console.warn('[live-sync] home poll query failed:', res.error.message); return; }
@@ -357,28 +516,13 @@ async function _lsResumePreFetch(sessionId){
     if (row.is_shared === undefined || row.is_shared === null) return { ok: false, reason: 'error' };
     if (!row.user_id) return { ok: false, reason: 'error' };
 
-    var meta = {
-      id: row.id,
-      name: row.name || 'Session',
-      productName: row.product_name || '',
-      companyName: row.company_name || '',
-      productType: row.product_type || '',
-      approach: row.approach || '',
-      lastTab: row.last_tab || 'mm',
-      lastStage: row.last_stage || '',
-      counts: row.counts || { caps:0, features:0, stories:0, sprintActive:null },
-      createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
-      savedAt: row.saved_at ? new Date(row.saved_at).getTime() : Date.now(),
-      isShared: !!row.is_shared,
-      // v9.08.04 fix: was missing here too — select('*') already pulls this
-      // column, it was just never mapped into the returned meta object.
-      shareMode: row.share_mode === 'edit' ? 'edit' : 'view',
-      userId: row.user_id,
-      lastEditedByName: row.last_edited_by_name || '',
-      activeUserId: row.active_user_id || null,
-      activeAt: row.active_at ? new Date(row.active_at).getTime() : null,
-      activeUserName: row.active_user_name || ''
-    };
+    // v9.31 code-review fix: was its own independent copy of this mapping
+    // (the "three independent DB-row-to-meta mapping sites" the old comment
+    // here referenced) — now calls the shared _ssRowToMeta() helper
+    // (session-store.js) instead. row.user_id is truthy here (the strict
+    // allowlist above already returned early otherwise), so this is
+    // behaviorally identical to the old inline `userId: row.user_id`.
+    var meta = _ssRowToMeta(row);
     return { ok: true, meta: meta, snapshot: row.snapshot || {}, cursorEventId: cursorEventId };
   } catch(e) {
     console.warn('[live-sync] resume pre-fetch failed:', e);
@@ -595,6 +739,14 @@ function _lsTriggerKickout(sessionId){
   // BEFORE calling homeClearSession(), makes its own guard condition skip
   // that attempt entirely — homeClearSession() itself is untouched again,
   // no further edit to the sacred function needed.
+  //
+  // v14 code-review fix: this null-out is exactly the pattern that starves
+  // homeClearSession()'s own occupancy-release capture of the real session
+  // id (the same bug already fixed once for home.js's homeSessionDeleteConfirm(),
+  // which is why homeClearSession() now takes an optional p_releaseSessionId
+  // parameter) — this call site was missed. sessionId (this function's own
+  // parameter) is passed through explicitly below instead of relying on the
+  // global, which by then is already null.
   _activeSessionId = null;
   _activeSessionIsShared = false;
 
@@ -605,7 +757,7 @@ function _lsTriggerKickout(sessionId){
   if (typeof showToast === 'function') {
     showToast(_safeName + ' unshared ' + _sessLabel + '. You no longer have access. Any unsaved changes here could not be saved.', 'warn');
   }
-  if (typeof homeClearSession === 'function') homeClearSession();
+  if (typeof homeClearSession === 'function') homeClearSession(sessionId);
   if (typeof switchTab === 'function') switchTab('home');
   if (typeof homeRenderSessionLibrary === 'function') homeRenderSessionLibrary();
 }
@@ -810,7 +962,7 @@ function _lsApplyCCEvents(freshSnapshot, events){
 }
 
 function _lsCanvasLabel(canvas){
-  var labels = { cc: 'Capability Canvas', mm: 'Discovery Map', pi: 'PI Planning', mi: 'Market Intelligence', la: 'Diagnostics', sc: 'Story Canvas', pc: 'Prototype Canvas' };
+  var labels = { cc: 'Capability Canvas', mm: 'Discovery Map', pi: 'Release Canvas', mi: 'Market Intelligence', la: 'Diagnostics', sc: 'Story Canvas', pc: 'Prototype Canvas' };
   return labels[canvas] || canvas;
 }
 
@@ -1371,18 +1523,22 @@ function _lsApplyWholesaleCanvas(canvas, freshSnapshot, changeKind, changerName)
     return { appliedAny: true, description: 'Discovery Map regenerated' };
   }
   if (canvas === 'pi') {
-    if (freshSnapshot.piPlan === undefined) return { appliedAny: false, description: null };
-    piPlan = freshSnapshot.piPlan;
+    if (freshSnapshot.piPlans === undefined) return { appliedAny: false, description: null };
+    piPlans = freshSnapshot.piPlans;
+    if (freshSnapshot.piBacklogStoryIds !== undefined) piBacklogStoryIds = freshSnapshot.piBacklogStoryIds;
     if (freshSnapshot.piInputs !== undefined) piInputs = freshSnapshot.piInputs;
-    // v8.133 fix (item 2): piSquads is written by piGenerate() itself
-    // (squadsCapped) — missing it left the receiving viewer's squad
-    // capacity/color data stale relative to the newly-applied plan.
-    if (freshSnapshot.piSquads !== undefined) piSquads = freshSnapshot.piSquads;
+    // _piActivePlanId is intentionally NOT touched here — local per-collaborator state.
+    // If the currently-active plan id no longer exists in the fresh piPlans (e.g. deleted by
+    // another collaborator), fall back to the first available plan so the viewer isn't left
+    // pointing at nothing.
+    if (_piActivePlanId && !piPlans.some(function(p){return p.id === _piActivePlanId;})) {
+      _piActivePlanId = piPlans.length ? piPlans[0].id : null;
+    }
     // v8.141 (item 8): same conflict protection either way (full wholesale
-    // replace, same confirm-before-discard gate) — only the description
+    // replace, same confirm-before-discard gate) - only the description
     // differs, so a receiving viewer has a rough sense of which kind of
     // change happened, per the critique's recommendation.
-    var _piDesc = (changeKind === 'manual') ? (changerName || 'A teammate') + ' updated the PI Plan' : 'PI Plan regenerated';
+    var _piDesc = (changeKind === 'manual') ? (changerName || 'A teammate') + ' updated a release plan' : 'Release plan regenerated';
     return { appliedAny: true, description: _piDesc };
   }
   if (canvas === 'mi') {

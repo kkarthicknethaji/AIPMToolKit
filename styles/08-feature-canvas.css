@@ -31,7 +31,7 @@
 .sc-metric-name{font-size:12px;font-weight:700;color:var(--t1);flex:1;min-width:0;overflow:hidden;display:flex;align-items:baseline;gap:0;}
 .sc-metric-sep{font-size:10px;color:var(--label);margin:0 4px;flex-shrink:0;}
 .sc-metric-seg{font-size:12px;font-weight:500;color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex-shrink:1;}
-.sc-metric-seg-last{font-size:12px;font-weight:700;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;}
+.sc-metric-seg-last{font-size:12px;font-weight:700;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:1;min-width:24px;}
 .sc-metric-count{font-size:10px;color:var(--t3);margin-left:auto;white-space:nowrap;}
 /* Feature cards grid */
 .sc-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding-top:8px;}
@@ -55,7 +55,7 @@
 .sc-card-remove:hover{border-color:var(--red);color:var(--red);background:#fde8e8;}
 .sc-card-name{font-size:11px;font-weight:600;color:var(--t1);line-height:1.35;}
 .sc-card-why{font-size:9px;color:var(--t3);margin-top:3px;line-height:1.4;flex:1;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;}
-.sc-card-footer{margin-top:auto;padding-top:6px;border-top:1px solid var(--divider);display:flex;align-items:center;justify-content:space-between;gap:4px;}
+.sc-card-footer{margin-top:auto;padding-top:6px;border-top:1px solid var(--divider);display:flex;align-items:center;justify-content:space-between;gap:4px;flex-wrap:wrap;row-gap:4px;}
 .sc-status-none{font-size:9px;color:var(--t4);display:flex;align-items:center;gap:4px;}
 .sc-status-done{font-size:9px;color:var(--green);font-weight:600;display:flex;align-items:center;gap:4px;}
 .sc-story-badge{font-size:8px;font-weight:700;background:#e8f5f3;color:var(--green);border:1px solid #a3d9d4;border-radius:8px;padding:1px 6px;}
@@ -149,6 +149,9 @@
 .sc-refine-bar{padding:9px 12px 10px;border-bottom:1px solid var(--divider);}
 .sc-refine-lbl{font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);margin-bottom:5px;}
 .sc-refine-row{display:flex;gap:6px;align-items:flex-end;}
+/* Mic (shared voice-input.js, styles/25-voice-input.css) grouped tightly
+   with Send. position:relative anchors .vi-status's absolute positioning. */
+.sc-refine-btn-group{display:flex;gap:4px;position:relative;}
 
 /* ── CAPABILITY TREE NAV PANEL — Option B: Track & Node ── */
 .sc-cap-nav{width:300px;min-width:300px;border-right:1px solid var(--divider);background:var(--card);display:flex;flex-direction:column;flex-shrink:0;overflow:hidden;transition:width 0.22s cubic-bezier(0.4,0,0.2,1);}
@@ -244,14 +247,14 @@
 .sc-refine-send:hover{background:var(--purple-deep);}
 .sc-refine-send:disabled{opacity:0.4;cursor:not-allowed;}
 /* ── Capability breadcrumb on feature card ── */
-.sc-cap-breadcrumb{font-size:9px;color:var(--t2);line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:4px;position:relative;background:var(--card);border:1px solid var(--divider);border-radius:4px;padding:3px 7px;display:block;max-width:100%;}
+.sc-cap-breadcrumb{font-size:9px;color:var(--t2);line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:4px;position:relative;background:var(--card);border:1px solid var(--divider);border-radius:4px;padding:3px 7px;display:block;max-width:100%;min-width:0;}
 .sc-bc-sep{color:var(--label);margin:0 3px;font-size:8px;}
 /* Custom tooltip on hover */
 .sc-cap-breadcrumb[data-tooltip]{cursor:default;}
 .sc-cap-breadcrumb[data-tooltip]::after{content:attr(data-tooltip);position:absolute;bottom:calc(100% + 5px);left:0;background:var(--navy);color:#fff;font-size:10px;line-height:1.4;padding:6px 9px;border-radius:5px;white-space:pre-wrap;max-width:240px;word-break:break-word;z-index:100;pointer-events:none;opacity:0;transition:opacity 0.15s;box-shadow:0 2px 8px rgba(0,0,0,0.18);}
 .sc-cap-breadcrumb[data-tooltip]:hover::after{opacity:1;}
 /* ── Metric breadcrumb on feature card (single line, above cap breadcrumb) ── */
-.sc-metric-breadcrumb{font-size:8px;color:var(--label);line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px;position:relative;}
+.sc-metric-breadcrumb{font-size:8px;color:var(--label);line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px;position:relative;min-width:0;}
 .sc-metric-breadcrumb[data-tooltip]::after{content:attr(data-tooltip);position:absolute;bottom:calc(100% + 5px);left:0;background:var(--navy);color:#fff;font-size:10px;line-height:1.4;padding:6px 9px;border-radius:5px;white-space:pre-wrap;max-width:240px;word-break:break-word;z-index:100;pointer-events:none;opacity:0;transition:opacity 0.15s;box-shadow:0 2px 8px rgba(0,0,0,0.18);}
 .sc-metric-breadcrumb[data-tooltip]:hover::after{opacity:1;}
 /* ── Evidence chip on metric group header ── */

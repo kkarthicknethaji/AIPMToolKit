@@ -42,4 +42,5 @@
 .op-filter-select{
   font-family:var(--font)!important;font-size:10px!important;
   color:var(--t1);border:none;outline:none;background:transparent;cursor:pointer;
+  max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }

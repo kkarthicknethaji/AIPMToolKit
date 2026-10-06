@@ -312,20 +312,24 @@ function spMarkDirty(){_spDirty=true;}
 function spResetDirty(){_spDirty=false;}
 // ── API key snapshot, taken on open — checkKey() live-writes to
 // sessionStorage on every keystroke, so Discard must revert to this
-// snapshot rather than re-reading sessionStorage (already overwritten). ──
-let _spKeySnapshot = '';
+// snapshot rather than re-reading sessionStorage (already overwritten).
+// v9.14: now a small map, not a single scalar — the provider dropdown
+// live-mutates appSettings.provider/model on change (no-save-required
+// preview, per the multi-provider spec's Section 4.1/10.3), so Discard
+// needs to revert not just whichever provider's key was edited, but also
+// which provider/model was active when Settings was opened.
+// Shape: { provider, model, keys: { anthropic: '', openai: '' } }. ──
+let _spKeySnapshot = { provider:'anthropic', model:'optimized', keys:{} };
 
 // ── Defaults for restore ──
 const _spDefaults3 = { kpiDepth:1, maxCaps:4, includeSubCaps:false, maxFeatures:5, maxStories:5, maxACs:3 };
 const _spDefaults4 = { defaultSprints:6, defaultSprintDur:2, defaultSquadName:'Squad', defaultSquadCapacity:80, teamVelocity:'med' };
 
-// ── Available models ──
-const _spModels = [
-  { value:'optimized',         label:'Optimized (Default)' },
-  { value:'claude-haiku-4-5',  label:'claude-haiku-4-5' },
-  { value:'claude-sonnet-4-6', label:'claude-sonnet-4-6' },
-  { value:'claude-opus-4-8',   label:'claude-opus-4-8' },
-];
+// ── Available providers/models (v9.14) ──
+// _spProviders and _spModelsByProvider now live in scripts/config.js — see
+// there for the Anthropic + OpenAI catalog (Gemini deferred to a later
+// phase). No local _spModels array here anymore — the flat, single-provider
+// list this used to be.
 
 // ── Open settings page ──
 function openSettingsPage() {
@@ -394,6 +398,10 @@ async function settingsPageSave() {
   // Section 1 — API & Access
   const modelEl = document.getElementById('sp-model-select');
   if(modelEl) appSettings.model = modelEl.value;
+  const togAis = document.getElementById('sp-tog-ais');
+  if(togAis) appSettings.aiStreamingEnabled = _spTogState('ais');
+  const togRag = document.getElementById('sp-tog-rag');
+  if(togRag) appSettings.raRagEnabled = _spTogState('rag');
 
   // Section 2 — Feature Modules (read toggle states)
   const togMd = document.getElementById('sp-tog-md');
@@ -401,11 +409,13 @@ async function settingsPageSave() {
   const togMi = document.getElementById('sp-tog-mi');
   const togPi = document.getElementById('sp-tog-pi');
   const togOp = document.getElementById('sp-tog-op');
+  const togRa = document.getElementById('sp-tog-ra');
   if(togMd) appSettings.featDD   = _spTogState('md');
   if(togPd) appSettings.featDiag = _spTogState('pd');
   if(togMi) appSettings.featMI   = _spTogState('mi');
   if(togPi) appSettings.featPI   = _spTogState('pi');
   if(togOp) appSettings.featOutcomePulse = _spTogState('op');
+  if(togRa) appSettings.featRA = _spTogState('ra');
 
   // Section 3 — Output Depth
   const vkdEl = document.getElementById('sp-vkd');
@@ -420,7 +430,7 @@ async function settingsPageSave() {
   if(vaEl) appSettings.maxACs       = parseInt(vaEl.textContent) || 3;
   appSettings.includeSubCaps = _spTogState('sc');
 
-  // Section 4 — PI Planning Defaults
+  // Section 4 — Release Planning Defaults
   const vspEl = document.getElementById('sp-vsp');
   const vdEl  = document.getElementById('sp-vd');
   const vqEl  = document.getElementById('sp-vq');
@@ -521,18 +531,41 @@ function spCancelChanges() {
   </div>`;
   document.body.appendChild(_ov);
 }
+// Mirrors _byokKey()'s (auth.js) company+provider-scoped key naming, but for
+// an explicit provider rather than the live appSettings.provider — needed
+// here since the snapshot/restore logic must address a provider that may
+// not be the currently-selected one in the dropdown.
+function _spByokKeyForProvider(provider){
+  const companyId = (function(){ try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || ''; } catch(e) { return ''; } })();
+  return 'hcl_ak_' + (companyId || 'none') + '_' + (provider || 'anthropic');
+}
+
 function spConfirmDiscard(){
   const _ov=document.getElementById('sp-cancel-confirm-overlay');
   if(_ov)_ov.remove();
-  // Revert any unsaved API key edit back to the value present when Settings
-  // was opened. checkKey() live-writes to sessionStorage on every keystroke,
-  // so sessionStorage may already hold the discarded value - revert it too,
-  // then re-run checkKey() to refresh the header dot and key status pill.
+  // Revert any unsaved API key edits back to the values present when
+  // Settings was opened, for EVERY provider touched this session (not just
+  // whichever provider is currently selected) — checkKey() live-writes to
+  // sessionStorage on every keystroke, so sessionStorage may already hold
+  // discarded values for more than one provider if the user previewed
+  // multiple providers before cancelling.
+  (typeof _spProviders!=='undefined'?_spProviders:[{value:'anthropic'}]).forEach(function(p){
+    const snapVal = _spKeySnapshot.keys ? _spKeySnapshot.keys[p.value] : undefined;
+    const slot = _spByokKeyForProvider(p.value);
+    if(snapVal) sessionStorage.setItem(slot, snapVal);
+    else sessionStorage.removeItem(slot);
+  });
+  // Revert the live-mutated provider/model globals too — the dropdown
+  // previews these immediately (no-save-required, per spec Section 4.1/10.3),
+  // so Cancel must undo that preview, not just the key values.
+  if(typeof appSettings!=='undefined'){
+    appSettings.provider = _spKeySnapshot.provider || 'anthropic';
+    appSettings.model = _spKeySnapshot.model || 'optimized';
+  }
   const keyEl=document.getElementById('api-key');
   if(keyEl){
-    keyEl.value=_spKeySnapshot;
-    if(_spKeySnapshot) sessionStorage.setItem(typeof _byokKey==='function'?_byokKey():'hcl_ak',_spKeySnapshot);
-    else sessionStorage.removeItem(typeof _byokKey==='function'?_byokKey():'hcl_ak');
+    const revertedVal = (_spKeySnapshot.keys && _spKeySnapshot.keys[appSettings.provider]) || '';
+    keyEl.value = revertedVal;
     if(typeof checkKey==='function') checkKey();
   }
   spResetDirty();
@@ -582,10 +615,20 @@ function spRender() {
     _spSection = 0;
   }
   spResetDirty();
-  // Snapshot the persisted key before any edits - checkKey() live-writes to
-  // sessionStorage on every keystroke, so this is the only point we can
-  // capture the "before" value for Discard to revert to.
-  _spKeySnapshot = sessionStorage.getItem(typeof _byokKey==='function'?_byokKey():'hcl_ak')||'';
+  // Snapshot the persisted key(s) before any edits - checkKey() live-writes
+  // to sessionStorage on every keystroke, and the provider dropdown
+  // live-mutates appSettings.provider/model before Save too (Section 4.1's
+  // no-save-required preview) - this is the only point we can capture the
+  // "before" state for Discard to revert to, for every provider, not just
+  // whichever one happens to be active right now.
+  _spKeySnapshot = {
+    provider: (typeof appSettings!=='undefined' && appSettings.provider) || 'anthropic',
+    model: (typeof appSettings!=='undefined' && appSettings.model) || 'optimized',
+    keys: {}
+  };
+  (typeof _spProviders!=='undefined'?_spProviders:[{value:'anthropic'}]).forEach(function(p){
+    _spKeySnapshot.keys[p.value] = sessionStorage.getItem(_spByokKeyForProvider(p.value)) || '';
+  });
   page.innerHTML = spBuildHTML();
   // Restore stepper values and toggle states from appSettings
   spPopulate();
@@ -600,7 +643,7 @@ function spRender() {
   },{capture:true});
   // If on Section 1 and the API key is unset, scroll the field into view —
   // the persistent purple ring (rendered inline above) already marks it.
-  if(_spSection===0 && !_spKeySnapshot){
+  if(_spSection===0 && !_spKeySnapshot.keys[appSettings.provider]){
     const wrap=document.getElementById('api-key-wrap');
     if(wrap) wrap.scrollIntoView({block:'center'});
   }
@@ -691,7 +734,7 @@ function spBuildHTML() {
 // ── Nav item HTML ──
 function spNavItem(n) {
   const icons  = {0:'ti-user-circle',1:'ti-building',2:'ti-box-multiple',3:'ti-layout-grid',4:'ti-adjustments-horizontal',5:'ti-calendar-event',6:'ti-users'};
-  const labels = {0:'My Profile',1:'Company Profile &amp; Access',2:'Product Profiles',3:'Feature Modules',4:'Output Depth',5:'PI Planning Defaults',6:'Team Management'};
+  const labels = {0:'My Profile',1:'Company Profile &amp; Access',2:'Product Profiles',3:'Feature Modules',4:'Output Depth',5:'Release Planning Defaults',6:'Team Management'};
   const active = _spSection === n;
   return `<div onclick="spNav(${n})" style="display:flex;align-items:center;gap:8px;padding:10px 14px;font-size:11px;font-weight:${active?600:500};color:${active?'#5F1EBE':'#6b6b68'};cursor:pointer;border-left:2px solid ${active?'#5F1EBE':'transparent'};background:${active?'#EEEDFE':'transparent'};font-family:'DM Sans',sans-serif;user-select:none;" id="sp-nav-${n}">
     <i class="ti ${icons[n]}" style="font-size:12px;flex-shrink:0;" aria-hidden="true"></i> ${labels[n]}
@@ -726,7 +769,7 @@ function spNav(n) {
   // permission work in this same change, per external adversarial review —
   // this previously checked n===3||n===4, disagreeing with spBuildHTML's
   // initial-render check of _spSection===4||5. Sections 4 and 5 (Output
-  // Depth, PI Planning Defaults) are the only two with numeric defaults to
+  // Depth, Release Planning Defaults) are the only two with numeric defaults to
   // restore; Feature Modules (3) never should have shown this button.
   if(restBtn) restBtn.style.display = (n===4||n===5) ? 'flex' : 'none';
   // Section 5 manages its own internal scroll — prevent outer wrapper from competing
@@ -803,6 +846,7 @@ function spPopulate() {
   _spSetTog('pd', appSettings.featDiag);
   _spSetTog('mi', appSettings.featMI);
   _spSetTog('pi', appSettings.featPI);
+  _spSetTog('ra', appSettings.featRA);
 
   // Section 3
   _spSetSpan('sp-vkd', appSettings.kpiDepth||1);
@@ -851,7 +895,7 @@ function spTogRow(k) {
 }
 function _spReadTogInit(k) {
   // Read from appSettings for known keys
-  const map = { md:'featDD', pd:'featDiag', mi:'featMI', pi:'featPI', sc:'includeSubCaps' };
+  const map = { md:'featDD', pd:'featDiag', mi:'featMI', pi:'featPI', sc:'includeSubCaps', ais:'aiStreamingEnabled', rag:'raRagEnabled' };
   const key = map[k];
   return key ? appSettings[key] : true;
 }
@@ -882,7 +926,7 @@ function _spTitle(n) {
     2:'Product Profiles',
     3:'Feature Modules',
     4:'Output Depth',
-    5:'PI Planning Defaults',
+    5:'Release Planning Defaults',
     6:'Team Management'
   }[n]||'';
 }
@@ -893,18 +937,25 @@ function _spDesc(n) {
     2:'Manage your product workspaces. Each profile feeds the Home tab selector.',
     3:'Control which tabs are available to users. Changes take effect immediately.',
     4:'Locked minimums ensure quality floors. You control the ceiling.',
-    5:'Default values pre-loaded when PI Planning opens. Users can override in the PI panel.',
+    5:'Default values pre-loaded when Release Canvas opens. Users can override in the Release Canvas panel.',
     6:'Invite, manage roles, and remove people from this company.'
   }[n]||'';
 }
 function _spTabLabel() {
-  const labels = {home:'Home',mm:'Discovery Map',cc:'Capability Canvas',sc:'Story Canvas',pi:'PI Canvas',mi:'Market Intelligence',la:'Experiment Canvas'};
+  const labels = {home:'Home',mm:'Discovery Map',cc:'Capability Canvas',sc:'Story Canvas',pi:'Release Canvas',mi:'Market Intelligence',la:'Experiment Canvas'};
   return labels[curTab] || 'App';
 }
 
 // ── Toggle HTML builder ──
-function _spTog(k, initOn) {
-  return `<div id="sp-tog-${k}" onclick="spTogRow('${k}')" style="position:relative;width:34px;height:18px;cursor:pointer;flex-shrink:0;">
+// v9.27.01 code-review fix — optional 3rd param `disabled` (default false,
+// every pre-existing call site is unaffected) drops the onclick entirely
+// for a non-admin instead of leaving every toggle on this page clickable
+// regardless of role. spTogRow('rag') never runs for that click, so
+// _spTogStates.rag never gets set and settingsPageSave() falls back to
+// _spReadTogInit('rag') — appSettings.raRagEnabled's current, unchanged
+// value — rather than a non-admin's locally-flipped one.
+function _spTog(k, initOn, disabled) {
+  return `<div id="sp-tog-${k}" onclick="${disabled?'':`spTogRow('${k}')`}" style="position:relative;width:34px;height:18px;cursor:${disabled?'not-allowed':'pointer'};flex-shrink:0;opacity:${disabled?'0.5':'1'};">
     <div id="sp-trk-${k}" style="position:absolute;inset:0;background:${initOn?'#5F1EBE':'#D0D5E8'};border-radius:18px;"></div>
     <div id="sp-tth-${k}" style="position:absolute;top:2px;left:${initOn?'16px':'2px'};width:14px;height:14px;background:#fff;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,0.2);"></div>
   </div>`;
@@ -1014,10 +1065,16 @@ function spP0() {
           const _pillColor = keyInvalid ? '#A32D2D' : '#007873';
           const _pillIcon  = keyInvalid ? 'ti-alert-circle' : (keyReady ? 'ti-circle-check' : 'ti-building');
           const _pillText  = keyInvalid ? 'Invalid key format' : (keyReady ? 'Personal key active' : 'Organisation key active');
+          // v9.14: label + placeholder are provider-conditional now — see
+          // scripts/config.js's _spKeyMetaForProvider(). The literal
+          // "Anthropic API Key" title this replaced was hardcoded for a
+          // single-provider app; this card is shared across whichever
+          // provider is active.
+          const _keyMeta = (typeof _spKeyMetaForProvider==='function') ? _spKeyMetaForProvider(appSettings.provider) : { label:'Anthropic API Key', placeholder:'sk-ant-api03-...' };
           return `
           <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;">
             <div style="flex:1;min-width:0;">
-              <div style="font-size:11px;font-weight:700;color:#000;font-family:'DM Sans',sans-serif;">Anthropic API Key</div>
+              <div id="sp-key-label" style="font-size:11px;font-weight:700;color:#000;font-family:'DM Sans',sans-serif;">${_keyMeta.label}</div>
               <div style="font-size:10px;color:#6b6b68;margin-top:1px;font-family:'DM Sans',sans-serif;">Personal, per-company — never shared with other companies you belong to</div>
             </div>
             <div style="flex-shrink:0;display:flex;align-items:center;gap:6px;">
@@ -1025,7 +1082,7 @@ function spP0() {
                 <i class="ti ${_pillIcon}" style="font-size:9px;"></i> ${_pillText}
               </span>
               <div id="api-key-wrap" style="display:flex;align-items:center;border:1px solid #D0D5E8;border-radius:5px;background:#fff;height:28px;width:200px;overflow:hidden;${keyInvalid?'box-shadow:0 0 0 3px rgba(124,58,237,0.25);border-color:#7C3AED;':''}">
-                <input type="password" id="api-key" value="${keyVal}" oninput="checkKey()" placeholder="sk-ant-api03-..." autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" style="flex:1;border:none;outline:none;padding:0 8px;font-size:11px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:transparent;height:100%;min-width:0;">
+                <input type="password" id="api-key" value="${keyVal}" oninput="checkKey()" placeholder="${_keyMeta.placeholder}" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" style="flex:1;border:none;outline:none;padding:0 8px;font-size:11px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:transparent;height:100%;min-width:0;">
                 <button onclick="toggleKeyVis()" style="background:none;border:none;border-left:1px solid #D0D5E8;padding:0 7px;height:100%;cursor:pointer;color:#6b6b68;display:flex;align-items:center;flex-shrink:0;">
                   <i class="ti ti-eye" id="eye-icon" style="font-size:12px;"></i>
                 </button>
@@ -1121,7 +1178,13 @@ function _spP0Toast(el, type, msg) {
 
 // ── Panel 1: Company Profile & Access ──
 function spP1() {
-  const modelOpts = _spModels.map(m =>
+  // v9.14: model catalog is now provider-keyed — see scripts/config.js.
+  const _activeProvider = (typeof appSettings!=='undefined' && appSettings.provider) || 'anthropic';
+  const providerOpts = (typeof _spProviders!=='undefined'?_spProviders:[{value:'anthropic',label:'Anthropic'}]).map(p =>
+    `<option value="${p.value}"${p.value===_activeProvider?' selected':''}>${p.label}</option>`
+  ).join('');
+  const _modelsForProvider = (typeof _spModelsByProvider!=='undefined' && _spModelsByProvider[_activeProvider]) || [];
+  const modelOpts = _modelsForProvider.map(m =>
     `<option value="${m.value}"${m.value===appSettings.model?' selected':''}>${m.label}</option>`
   ).join('');
 
@@ -1232,29 +1295,87 @@ function spP1() {
   ${_spSubLbl('API &amp; Access')}
 
   ${_spRow(
+    'AI Provider',
+    'Which AI service this company\'s calls are routed through.',
+    `<select id="sp-provider-select" onchange="spOnProviderChange(this.value)" style="height:28px;border:1px solid #D0D5E8;border-radius:5px;padding:0 8px;font-size:11px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:#fff;outline:none;cursor:pointer;width:280px;">${providerOpts}</select>`,
+    'Switching provider repopulates the model list below and resets it to Optimized (Default).',
+    true
+  )}
+
+  ${_spRow(
     'AI Model',
-    'Model used across all AI generation. Higher-capability models improve quality but increase cost.',
+    '"Optimized" auto-selects the right tier per task. Or pin a specific model.',
     `<select id="sp-model-select" style="height:28px;border:1px solid #D0D5E8;border-radius:5px;padding:0 8px;font-size:11px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:#fff;outline:none;cursor:pointer;width:280px;">${modelOpts}</select>`,
-    'If the selected model is unavailable for your key, the next tier down is used automatically.',
+    'If the selected model is unavailable for your key, generation fails with a clear error rather than silently switching models.',
+    true
+  )}
+
+  ${_spRow(
+    'Live AI Streaming',
+    'Requirement Agent replies reveal token-by-token as they generate, instead of appearing all at once when the full response is ready.',
+    _spTog('ais', appSettings.aiStreamingEnabled),
+    'Experimental — off by default.',
+    true
+  )}
+
+  ${_spRow(
+    'Requirement Agent Document RAG',
+    'Documents uploaded in Requirement Agent are embedded and stay searchable for the rest of that conversation.',
+    _spTog('rag', appSettings.raRagEnabled, readOnly),
+    readOnly?'Only admins can change this.':'Off by default until your organization\'s embedding service is approved.',
     true
   )}`;
+}
+
+// ── Provider dropdown change handler (v9.14) ──
+// Client-side preview, no Save required (per spec Section 4.1/10.3): live-
+// mutates appSettings.provider/model immediately (not deferred to Save,
+// unlike most other Settings fields) so checkKey()/_byokKey() write to the
+// right provider-scoped sessionStorage slot the instant the user starts
+// typing a key for the newly-selected provider. spConfirmDiscard() reverts
+// this via _spKeySnapshot if the user cancels instead of saving.
+function spOnProviderChange(newProvider){
+  if(typeof appSettings==='undefined') return;
+  appSettings.provider = newProvider;
+  appSettings.model = 'optimized'; // no cross-provider "equivalent model" carry-over — model IDs are provider-specific
+  spMarkDirty();
+
+  // Repopulate the Model dropdown from the new provider's catalog
+  const modelSel = document.getElementById('sp-model-select');
+  if(modelSel && typeof _spModelsByProvider!=='undefined'){
+    const models = _spModelsByProvider[newProvider] || [];
+    modelSel.innerHTML = models.map(m => `<option value="${m.value}"${m.value==='optimized'?' selected':''}>${m.label}</option>`).join('');
+  }
+
+  // Swap the API key card's label/placeholder, and reload whichever key
+  // (if any) is already saved for this provider in this company.
+  const keyMeta = (typeof _spKeyMetaForProvider==='function') ? _spKeyMetaForProvider(newProvider) : { label:'Anthropic API Key', placeholder:'sk-ant-api03-...' };
+  const labelEl = document.getElementById('sp-key-label');
+  if(labelEl) labelEl.textContent = keyMeta.label;
+  const keyEl = document.getElementById('api-key');
+  if(keyEl){
+    keyEl.placeholder = keyMeta.placeholder;
+    keyEl.value = sessionStorage.getItem(typeof _byokKey==='function'?_byokKey():'hcl_ak') || '';
+    if(typeof checkKey==='function') checkKey(); // refreshes the dot + sp-key-status pill for the reloaded value
+  }
 }
 
 // ── Panel 2: Feature Modules ──
 function spP2() {
   return `
-  ${_spModRow('md','ti-table','#DCE6F0','#0F5FDC','Metrics Definition','Dictionary of all KPI tree metrics with benchmarks and red flags',appSettings.featDD)}
-  ${_spModRow('pd','ti-microscope','#e6f4f1','#007873','Experiment Canvas','Evidence collection and product leak analysis on your KPI tree',appSettings.featDiag)}
-  ${_spModRow('mi','ti-world-search','#EAF3DE','#3B6D11','Market Intelligence','Market sizing, competitor mapping, and SWOT. Runs before KPI tree generation.',appSettings.featMI)}
-  ${_spModRow('pi','ti-calendar-event','#EEEDFE','#5F1EBE','PI Planning','Sprint sequencing and PI board for story backlog planning',appSettings.featPI)}
-  ${_spModRow('op','ti-activity','#EEEDFE','#5F1EBE','Outcome Pulse','Track feature outcome hypotheses against actual results, with a leadership-facing rollup',appSettings.featOutcomePulse,true)}`;
+  ${_spModRow('ra','ti-clipboard-text','#EEEDFE','#5F1EBE','Requirement Agent','Adds the "Define Requirements" workflow to Capability Canvas, routing feature generation through a finalized release brief',appSettings.featRA)}
+  ${_spModRow('mi','ti-world-search','#EAF3DE','#3B6D11','Market Intelligence','Market sizing, competitor mapping, and SWOT. Runs before Discovery Map generation.',appSettings.featMI)}
+  ${_spModRow('op','ti-activity','#EEEDFE','#5F1EBE','Outcome Pulse','Track feature outcome hypotheses against actual results, with a leadership-facing rollup',appSettings.featOutcomePulse)}
+  ${_spModRow('md','ti-table','#DCE6F0','#0F5FDC','Metrics Dictionary','Dictionary of all KPI tree metrics with benchmarks and red flags',appSettings.featDD)}
+  ${_spModRow('pd','ti-microscope','#e6f4f1','#007873','Experiment Canvas','Evidence collection and product leak analysis on your Discovery Map',appSettings.featDiag)}
+  ${_spModRow('pi','ti-calendar-event','#EEEDFE','#5F1EBE','Release Canvas','Sprint sequencing and release board for story backlog planning',appSettings.featPI,true)}`;
 }
 
 // ── Panel 3: Output Depth ──
 function spP3() {
   return `
   ${_spSubLbl('Discovery Map')}
-  ${_spRow('KPI Tree Depth','Controls metric levels in Outcome Metrics mode — L1 = top-level KPIs only, L2 = with sub-metrics, L3 = full diagnostic tree',
+  ${_spRow('Outcome Metrics Depth','Controls metric levels in Outcome Metrics mode — L1 = top-level KPIs only, L2 = with sub-metrics, L3 = full diagnostic tree',
     _spStepper('sp-vkd',appSettings.kpiDepth||1,"spStep('sp-vkd',-1,1,3)","spStep('sp-vkd',1,1,3)"),'Max 3')}
   ${_spSubLbl('Capabilities')}
   <div class="sp-group-tight">
@@ -1267,7 +1388,7 @@ function spP3() {
     _spStepper('sp-vf',appSettings.maxFeatures,"spStep('sp-vf',-1,3,6)","spStep('sp-vf',1,3,6)"),'Min 3 locked')}
   ${_spSubLbl('Stories &amp; Acceptance Criteria')}
   <div class="sp-group-tight">
-  ${_spRow('Stories per Feature','AI generates 2 to [n] stories per feature across Story Canvas and PI Planning',
+  ${_spRow('Stories per Feature','AI generates 2 to [n] stories per feature across Story Canvas and Release Canvas',
     _spStepper('sp-vs',appSettings.maxStories,"spStep('sp-vs',-1,2,10)","spStep('sp-vs',1,2,10)"),'Min 2 locked',true)}
   ${_spRow('Acceptance Criteria per Story','One happy path and one edge case are always included',
     _spStepper('sp-va',appSettings.maxACs,"spStep('sp-va',-1,2,5)","spStep('sp-va',1,2,5)"),'Min 2 locked',true)}
@@ -1275,58 +1396,90 @@ function spP3() {
   <div style="border-top:0.5px solid #D0D5E8;margin-top:4px;"></div>
   ${_spSubLbl('Session Sharing')}
   <div style="margin-bottom:4px;">
-    <div style="font-size:11px;font-weight:600;color:#000;margin-bottom:2px;font-family:'DM Sans',sans-serif;">Default access for shared sessions</div>
-    <div style="font-size:10px;color:#6b6b68;margin-bottom:10px;font-family:'DM Sans',sans-serif;">Applies when a session is shared with your team.</div>
-    <div style="display:flex;gap:10px;margin-bottom:10px;">
-      <label style="flex:1;display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border:1px solid ${(appSettings.defaultShareMode||'view')==='view'?'#5F1EBE':'#D0D5E8'};background:${(appSettings.defaultShareMode||'view')==='view'?'#F7F6FE':'#fff'};border-radius:7px;cursor:pointer;" id="sp-sharemode-view-wrap">
-        <input type="radio" name="sp-sharemode" id="sp-sharemode-view" ${(appSettings.defaultShareMode||'view')==='view'?'checked':''} onchange="spSetShareMode('view')" style="margin-top:2px;accent-color:#5F1EBE;">
-        <div>
-          <div style="font-size:11px;font-weight:600;color:#1a1a1a;font-family:'DM Sans',sans-serif;">View only <span style="font-weight:400;color:#5F1EBE;">Default</span></div>
-          <div style="font-size:10px;color:#6b6b68;margin-top:2px;line-height:1.5;font-family:'DM Sans',sans-serif;">Team members can view and export session content. They can't add, edit, or delete anything.</div>
-        </div>
-      </label>
-      <label style="flex:1;display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border:1px solid ${appSettings.defaultShareMode==='edit'?'#5F1EBE':'#D0D5E8'};background:${appSettings.defaultShareMode==='edit'?'#F7F6FE':'#fff'};border-radius:7px;cursor:pointer;" id="sp-sharemode-edit-wrap">
-        <input type="radio" name="sp-sharemode" id="sp-sharemode-edit" ${appSettings.defaultShareMode==='edit'?'checked':''} onchange="spSetShareMode('edit')" style="margin-top:2px;accent-color:#5F1EBE;">
-        <div>
-          <div style="font-size:11px;font-weight:600;color:#1a1a1a;font-family:'DM Sans',sans-serif;">Collaborative editing</div>
-          <div style="font-size:10px;color:#6b6b68;margin-top:2px;line-height:1.5;font-family:'DM Sans',sans-serif;">Team members can generate, edit, and delete content, same as you.</div>
-        </div>
-      </label>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${appSettings.defaultShareMode==='edit'?'12px':'0'};">
+      <div>
+        <div style="font-size:11px;font-weight:600;color:#000;margin-bottom:2px;font-family:'DM Sans',sans-serif;">Collaborative Editing</div>
+        <div style="font-size:10px;color:#6b6b68;line-height:1.4;font-family:'DM Sans',sans-serif;">Lets shared team members edit sessions, either one at a time or together.</div>
+      </div>
+      <div id="sp-tog-collab" onclick="spSetCollabToggle(${appSettings.defaultShareMode!=='edit'})" style="position:relative;width:34px;height:18px;cursor:pointer;flex-shrink:0;">
+        <div id="sp-trk-collab" style="position:absolute;inset:0;background:${appSettings.defaultShareMode==='edit'?'#5F1EBE':'#D0D5E8'};border-radius:18px;"></div>
+        <div id="sp-tth-collab" style="position:absolute;top:2px;left:${appSettings.defaultShareMode==='edit'?'16px':'2px'};width:14px;height:14px;background:#fff;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,0.2);"></div>
+      </div>
     </div>
-    <div id="sp-sharemode-warn" style="display:${appSettings.defaultShareMode==='edit'?'flex':'none'};gap:8px;align-items:flex-start;background:#FAEEDA;border:0.5px solid #EF9F27;border-radius:6px;padding:8px 10px;">
-      <i class="ti ti-alert-triangle" style="font-size:12px;color:#633806;flex-shrink:0;margin-top:1px;" aria-hidden="true"></i>
-      <div style="font-size:10px;color:#633806;line-height:1.5;font-family:'DM Sans',sans-serif;">Turning on collaborative editing means multiple people can update the same session at once. Updates can silently overwrite each other, so this mode needs active coordination among your team.</div>
+    <div id="sp-collab-submodes" style="display:${appSettings.defaultShareMode==='edit'?'block':'none'};">
+      <div style="display:flex;gap:10px;margin-bottom:10px;">
+        <label style="flex:1;display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border:1px solid ${(appSettings.collabEditMode||'single')==='single'?'#5F1EBE':'#D0D5E8'};background:${(appSettings.collabEditMode||'single')==='single'?'#F7F6FE':'#fff'};border-radius:7px;cursor:pointer;" id="sp-collabmode-single-wrap">
+          <input type="radio" name="sp-collabmode" id="sp-collabmode-single" ${(appSettings.collabEditMode||'single')==='single'?'checked':''} onchange="spSetCollabEditMode('single')" style="margin-top:2px;accent-color:#5F1EBE;">
+          <div>
+            <div style="font-size:11px;font-weight:600;color:#1a1a1a;font-family:'DM Sans',sans-serif;">Single User Editing <span style="font-weight:400;color:#5F1EBE;">Default</span></div>
+            <div style="font-size:10px;color:#6b6b68;margin-top:2px;line-height:1.5;font-family:'DM Sans',sans-serif;">Only one team member can edit at a time. Others view until the session is available.</div>
+          </div>
+        </label>
+        <label style="flex:1;display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border:1px solid ${appSettings.collabEditMode==='multi'?'#5F1EBE':'#D0D5E8'};background:${appSettings.collabEditMode==='multi'?'#F7F6FE':'#fff'};border-radius:7px;cursor:pointer;" id="sp-collabmode-multi-wrap">
+          <input type="radio" name="sp-collabmode" id="sp-collabmode-multi" ${appSettings.collabEditMode==='multi'?'checked':''} onchange="spSetCollabEditMode('multi')" style="margin-top:2px;accent-color:#5F1EBE;">
+          <div>
+            <div style="font-size:11px;font-weight:600;color:#1a1a1a;font-family:'DM Sans',sans-serif;">Multi User Editing</div>
+            <div style="font-size:10px;color:#6b6b68;margin-top:2px;line-height:1.5;font-family:'DM Sans',sans-serif;">Everyone can generate, edit, and delete content at the same time.</div>
+          </div>
+        </label>
+      </div>
+      <div id="sp-sharemode-warn" style="display:${appSettings.collabEditMode==='multi'?'flex':'none'};gap:8px;align-items:flex-start;background:#FAEEDA;border:0.5px solid #EF9F27;border-radius:6px;padding:8px 10px;">
+        <i class="ti ti-alert-triangle" style="font-size:12px;color:#633806;flex-shrink:0;margin-top:1px;" aria-hidden="true"></i>
+        <div style="font-size:10px;color:#633806;line-height:1.5;font-family:'DM Sans',sans-serif;">Turning on collaborative editing means multiple people can update the same session at once. Updates can silently overwrite each other, so this mode needs active coordination among your team.</div>
+      </div>
     </div>
   </div>`;
 }
 
-// ── v9.08: Session Sharing radio handler ──
+// ── v9.12: Collaborative Editing toggle handler ──
 // Labeled clearly as a security/access-control setting in this comment
 // despite living in the Output Depth section for now — this is a
 // temporary placement, not a signal that this is a minor UX preference.
-function spSetShareMode(mode){
-  appSettings.defaultShareMode = (mode==='edit') ? 'edit' : 'view';
-  const viewWrap=document.getElementById('sp-sharemode-view-wrap');
-  const editWrap=document.getElementById('sp-sharemode-edit-wrap');
+// Replaces the old v9.08 two-radio (View only / Collaborative editing)
+// design — defaultShareMode is still the underlying persisted field (kept
+// for backward compat with canEditSession()/session-share logic elsewhere),
+// but the UI now presents it as a single on/off toggle, with a second,
+// new field (collabEditMode) distinguishing Single vs Multi once On.
+function spSetCollabToggle(on){
+  appSettings.defaultShareMode = on ? 'edit' : 'view';
+  const wrap=document.getElementById('sp-tog-collab');
+  const trk=document.getElementById('sp-trk-collab');
+  const tth=document.getElementById('sp-tth-collab');
+  if(trk) trk.style.background = on ? '#5F1EBE' : '#D0D5E8';
+  if(tth) tth.style.left       = on ? '16px' : '2px';
+  // Re-wire the next click to flip back — the onclick was rendered with the
+  // toggle's state baked in as a literal at render time, so it must be
+  // refreshed here or a second click would send the same 'on' value again.
+  if(wrap) wrap.setAttribute('onclick', 'spSetCollabToggle(' + !on + ')');
+  const submodes=document.getElementById('sp-collab-submodes');
+  if(submodes) submodes.style.display = on ? 'block' : 'none';
   const warn=document.getElementById('sp-sharemode-warn');
-  if(viewWrap){
-    viewWrap.style.border=appSettings.defaultShareMode==='view'?'1px solid #5F1EBE':'1px solid #D0D5E8';
-    viewWrap.style.background=appSettings.defaultShareMode==='view'?'#F7F6FE':'#fff';
-  }
-  if(editWrap){
-    editWrap.style.border=appSettings.defaultShareMode==='edit'?'1px solid #5F1EBE':'1px solid #D0D5E8';
-    editWrap.style.background=appSettings.defaultShareMode==='edit'?'#F7F6FE':'#fff';
-  }
-  // v9.08.01 fix: warning strip now toggles live with selection, rather
-  // than always rendering regardless of which mode is selected. Initial
-  // render (in the template above) is gated on appSettings.defaultShareMode
-  // directly, so reopening Settings when Collaborative editing is already
-  // the saved default shows the warning immediately, not only after a click.
-  if(warn) warn.style.display=(appSettings.defaultShareMode==='edit')?'flex':'none';
+  if(warn) warn.style.display=(on && appSettings.collabEditMode==='multi')?'flex':'none';
   if(typeof spMarkDirty==='function') spMarkDirty();
 }
 
-// ── Panel 4: PI Planning Defaults ──
+// ── v9.12: Single/Multi sub-choice handler ──
+function spSetCollabEditMode(mode){
+  appSettings.collabEditMode = (mode==='multi') ? 'multi' : 'single';
+  const singleWrap=document.getElementById('sp-collabmode-single-wrap');
+  const multiWrap=document.getElementById('sp-collabmode-multi-wrap');
+  const warn=document.getElementById('sp-sharemode-warn');
+  if(singleWrap){
+    singleWrap.style.border=appSettings.collabEditMode==='single'?'1px solid #5F1EBE':'1px solid #D0D5E8';
+    singleWrap.style.background=appSettings.collabEditMode==='single'?'#F7F6FE':'#fff';
+  }
+  if(multiWrap){
+    multiWrap.style.border=appSettings.collabEditMode==='multi'?'1px solid #5F1EBE':'1px solid #D0D5E8';
+    multiWrap.style.background=appSettings.collabEditMode==='multi'?'#F7F6FE':'#fff';
+  }
+  // Warning strip toggles live with selection, matching the v9.08 pattern
+  // this replaces — gated on collabEditMode directly, so reopening Settings
+  // when Multi is already the saved choice shows the warning immediately.
+  if(warn) warn.style.display=(appSettings.collabEditMode==='multi')?'flex':'none';
+  if(typeof spMarkDirty==='function') spMarkDirty();
+}
+
+// ── Panel 4: Release Planning Defaults (internal ids stay pi-prefixed) ──
 function spP4() {
   const vel = appSettings.teamVelocity || 'med';
   const segBtn = (k,lbl) => {
@@ -1338,13 +1491,13 @@ function spP4() {
     return `<button id="sp-seg-${k}" onclick="spSeg('${k}')" data-active="${on}" style="width:44px;font-size:10px;font-weight:${on?600:500};background:${on?'#EEEDFE':'#fff'};border:none;cursor:pointer;color:${on?'#5F1EBE':'#6b6b68'};font-family:'DM Sans',sans-serif;display:flex;align-items:center;justify-content:center;">${lbl}</button>`;
   };
   return `
-  ${_spRow('Sprints per PI','How many sprints in a typical planning interval',
+  ${_spRow('Sprints per Release','How many sprints in a typical planning interval',
     _spStepper('sp-vsp',appSettings.defaultSprints,"spStep('sp-vsp',-1,1,20)","spStep('sp-vsp',1,1,20)"),null)}
   ${_spRow('Sprint Duration','Duration of each sprint in weeks',
     _spStepper('sp-vd',appSettings.defaultSprintDur,"spStep('sp-vd',-1,1,6)","spStep('sp-vd',1,1,6)")+'<span style="font-size:10px;color:#6b6b68;font-family:\'DM Sans\',sans-serif;">wks</span>',null)}
   ${_spRow('Squad Name Prefix','Used when a new squad is added. e.g. Pod, Team, Squad',
     `<input id="sp-squad-prefix" type="text" value="${appSettings.defaultSquadName||'Squad'}" style="height:26px;border:1px solid #D0D5E8;border-radius:5px;padding:0 8px;font-size:11px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:#fff;outline:none;width:110px;">`,null)}
-  ${_spRow('Squad Capacity (points)','Default story points per squad per PI',
+  ${_spRow('Squad Capacity (points)','Default story points per squad per Release',
     _spStepper('sp-vq',appSettings.defaultSquadCapacity,"spStep('sp-vq',-1,10,500)","spStep('sp-vq',1,10,500)",true)+'<span style="font-size:10px;color:#6b6b68;font-family:\'DM Sans\',sans-serif;">pts</span>',null)}
   ${_spRow('Team Velocity','Calibrates AI story sizing. Low (~3), Med (~6), High (~8) pts/dev/sprint',
     `<div style="display:inline-flex;border:1px solid #D0D5E8;border-radius:5px;overflow:hidden;height:26px;">

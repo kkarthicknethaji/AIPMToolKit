@@ -1,31 +1,58 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// AI PM Toolkit — Anthropic Proxy
-// Render.com deployment — Phase 1 (Auth + BYOK + Org Key)
+// AI PM Toolkit — Multi-Provider AI Proxy (v9.23.03 — multi-provider since v9.14; /api/embed + /api/embed-info added v9.23.03, RA-Persistent-Doc-RAG-Spec-v14)
+// Render.com deployment
 //
 // Responsibilities:
 //   - Receive POST /api/anthropic from browser (Netlify frontend)
 //   - Verify Supabase JWT from X-Auth-Token header using JWKS (ES256 / ECC P-256)
-//   - Forward to Anthropic server-side (no CORS restrictions, no timeout)
-//   - API key priority: user BYOK key → ANTHROPIC_API_KEY env var (org key fallback)
+//   - Resolve the company's ACTUAL configured provider server-side (never
+//     trust the client-sent `provider` field for dispatch/billing/usage —
+//     see requireActiveCompanyMember + _resolveCompanyProvider below)
+//   - Forward to the resolved provider (Anthropic, OpenAI, or Gemini — see
+//     proxy/providerAdapters.js) via its adapter
+//   - API key priority per provider: user BYOK key → org env var fallback
 //   - Returns structured JSON errors — never raw HTML
 //   - Rate limit: RATE_LIMIT_MAX req/min per IP
 //
 // Required env vars (set in Render dashboard):
-//   ALLOWED_ORIGIN        — single origin allowed e.g. https://productdiagnostics.netlify.app
+//   ALLOWED_ORIGIN        — comma-separated list of allowed origins, e.g.
+//                           https://productdiagnostics.netlify.app,https://white-ocean-059656610.7.azurestaticapps.net
+//                           (name kept singular for continuity with existing Render env var config —
+//                           it now holds one or more origins, not exactly one)
 //   SUPABASE_URL          — from Supabase project → Settings → API → Project URL
 //                           JWKS endpoint derived automatically: SUPABASE_URL/auth/v1/.well-known/jwks.json
 //   ANTHROPIC_API_KEY     — optional shared org key; if unset, requires user BYOK key
+//   OPENAI_API_KEY        — optional shared org key for OpenAI; same fallback role as ANTHROPIC_API_KEY
+//   GEMINI_API_KEY        — optional shared org key for Gemini; same fallback role as ANTHROPIC_API_KEY
+//   AZURE_OPENAI_ENDPOINT — Requirement Agent persistent-doc RAG (v14): Azure OpenAI
+//                           resource endpoint, e.g. https://vspm-azureai.openai.azure.com
+//   AZURE_OPENAI_KEY      — Azure OpenAI resource API key (api-key header auth)
+//   AZURE_OPENAI_EMBED_DEPLOYMENT — the embedding deployment name (sent as the
+//                           request body's `model` field — Azure's v1 embeddings
+//                           API resolves deployments this way, not via a URL path
+//                           segment; see /api/embed below)
 //
 // Removed env vars (no longer needed — Supabase migrated from HS256 to ECC P-256):
 //   SUPABASE_JWT_SECRET — delete from Render dashboard; JWKS verification replaces it
 // ─────────────────────────────────────────────────────────────────────────────
 
 const express   = require('express');
+const path      = require('path');
 const cors      = require('cors');
 const rateLimit = require('express-rate-limit');
 const jwt       = require('jsonwebtoken');
 const jwksRsa   = require('jwks-rsa');
 const { createClient } = require('@supabase/supabase-js');
+const { getAdapter, isKnownModel } = require('./providerAdapters');
+const apiKeyAuth        = require('./middleware/apiKeyAuth');
+const { buildUsageEventRpcParams } = require('./lib/costTower/usageEventRpcParams');
+const usageEventsRouter = require('./routes/v1/usageEvents');
+const outcomesRouter    = require('./routes/v1/outcomes');
+const outcomeTypesRouter = require('./routes/v1/outcomeTypes');
+const companyAppsRouter = require('./routes/v1/companyApps');
+const tracesRouter      = require('./routes/v1/traces');
+const toolSpansRouter   = require('./routes/v1/toolSpans');
+const tracePayloadsRouter = require('./routes/v1/tracePayloads');
 
 const app  = express();
 const PORT = process.env.PORT || 3001;
@@ -40,8 +67,29 @@ const RATE_LIMIT_MAX        = 100; // requests per window per IP
 const RATE_LIMIT_WINDOW_MIN = 1;   // window size in minutes
 
 // ── Env vars ──────────────────────────────────────────────────────────────────
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '';
+// ALLOWED_ORIGIN now holds one or more comma-separated origins (was a single
+// exact-match string). Parsed the same way as INVITE_REDIRECT_ALLOWLIST below
+// — split, trim, filter empties, normalize via the URL constructor so a
+// trailing-slash typo in the env var can't silently fail to match. Supports
+// this proxy being called from multiple hosted frontends at once (Netlify +
+// Azure Static Web Apps) without branching on which platform is calling.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGIN || '')
+  .split(',')
+  .map(function(s){ return s.trim(); })
+  .filter(Boolean)
+  .map(function(s){
+    try { return new URL(s).origin; }
+    catch(e) { console.warn('[WARN] invalid ALLOWED_ORIGIN entry, ignoring:', s); return ''; }
+  })
+  .filter(Boolean);
 const SUPABASE_URL   = process.env.SUPABASE_URL   || '';
+
+// v14 (RA-Persistent-Doc-RAG-Spec-v14, D4/D6) — Requirement Agent persistent-
+// document embeddings, via Azure OpenAI. Trimmed of any trailing slash so the
+// path built in _embedAzure() below never ends up with a doubled "//".
+const AZURE_OPENAI_ENDPOINT = (process.env.AZURE_OPENAI_ENDPOINT || '').replace(/\/+$/, '');
+const AZURE_OPENAI_KEY      = process.env.AZURE_OPENAI_KEY || '';
+const AZURE_OPENAI_EMBED_DEPLOYMENT = process.env.AZURE_OPENAI_EMBED_DEPLOYMENT || '';
 
 // ── Invite redirect allow-list (Phase 4, v8.112) ────────────────────────────
 // Comma-separated exact origins, parsed once at boot. Deliberately NOT a
@@ -88,7 +136,13 @@ function _resolveInviteRedirect(req) {
   console.warn('[TEAM] origin not in INVITE_REDIRECT_ALLOWLIST, omitting redirectTo:', requestOrigin);
   return undefined;
 }
-const ORG_API_KEY    = process.env.ANTHROPIC_API_KEY || ''; // optional shared key
+// v9.14: same fallback role each provider's own env var plays — replaces the
+// old single ORG_API_KEY (Anthropic-only) constant.
+const ORG_API_KEY_BY_PROVIDER = {
+  anthropic: process.env.ANTHROPIC_API_KEY || '',
+  openai:    process.env.OPENAI_API_KEY || '',
+  gemini:    process.env.GEMINI_API_KEY || ''
+};
 // New for Phase 1 — required for /api/check-company-name (and Phase 4's admin
 // routes later). This is the first time this proxy talks to the Supabase
 // database directly rather than only verifying JWTs; @supabase/supabase-js
@@ -97,9 +151,10 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
 // Warn on startup if critical env vars are missing
 if (!SUPABASE_URL)    console.warn('[WARN] SUPABASE_URL not set — JWT verification will fail');
-if (!ALLOWED_ORIGIN)  console.warn('[WARN] ALLOWED_ORIGIN not set — all origins will be blocked');
+if (!ALLOWED_ORIGINS.length) console.warn('[WARN] ALLOWED_ORIGIN not set (or contains no valid origins) — all origins will be blocked');
 if (!SUPABASE_SERVICE_ROLE_KEY) console.warn('[WARN] SUPABASE_SERVICE_ROLE_KEY not set — /api/check-company-name and admin routes will fail');
 if (!INVITE_REDIRECT_ALLOWLIST.length) console.warn('[WARN] INVITE_REDIRECT_ALLOWLIST not set — invite links will use the Supabase project default Site URL only');
+if (!AZURE_OPENAI_ENDPOINT || !AZURE_OPENAI_KEY || !AZURE_OPENAI_EMBED_DEPLOYMENT) console.warn('[WARN] AZURE_OPENAI_ENDPOINT/AZURE_OPENAI_KEY/AZURE_OPENAI_EMBED_DEPLOYMENT not fully set — /api/embed and /api/embed-info will fail');
 
 // Admin client — bypasses RLS by design, used only for the narrow set of
 // server-side operations that need it (pre-auth company name checks here;
@@ -107,6 +162,509 @@ if (!INVITE_REDIRECT_ALLOWLIST.length) console.warn('[WARN] INVITE_REDIRECT_ALLO
 const supabaseAdmin = (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY)
   ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
   : null;
+
+// ── AI usage-tracking insert helper (v9.13) ──────────────────────────────────
+// Writes one row to mt_ai_usage_events per /api/anthropic call, on BOTH the
+// success/response-received path and the error/timeout path (two call sites
+// below use this same helper — see the main handler). Awaited, not fire-and-
+// forget: an un-awaited insert on a long-running Express process is usually
+// safe, but not safe against Render replacing/restarting this instance mid-
+// request, which would silently drop the row with no way to know it happened.
+// Awaiting costs a little latency per call but guarantees the row exists (or
+// its failure is at least logged) before the response is sent.
+// Never throws — a usage-tracking failure must never surface to the user as
+// an AI-generation failure, so any error here is caught and logged only.
+// AI Trace Layer — replaces the old direct .insert() with the shared
+// transactional RPC (also called by proxy/routes/v1/usageEvents.js), so
+// there is exactly one place a usage event and its optional span are ever
+// written, and Product Studio's own calls can never drift from the external
+// ingestion path in how trace consistency or idempotency is enforced.
+// app_id is stamped here once (this proxy is Product Studio's own ingestion
+// path) rather than at every caller's field-building site, same as before.
+async function _insertAiUsageEvent(fields) {
+  if (!supabaseAdmin) return; // telemetry is best-effort; never block on missing config
+  try {
+    const { data, error } = await supabaseAdmin.rpc(
+      'mt_ai_record_usage_event_with_span',
+      buildUsageEventRpcParams(Object.assign({ app_id: INGESTION_APP_ID }, fields))
+    );
+    // An ERRCODE 23514 here means a replayed client_call_id/client_trace_id
+    // with genuinely different identity fields — extremely unlikely, but
+    // exactly the kind of telemetry-layer problem this function's own
+    // long-standing principle already covers: logged, never thrown outward.
+    // Unlike the external /v1/usage-events wrapper (which maps this same
+    // exception to 409 for an API consumer), this is Product Studio's own
+    // internal generation path — an end user waiting on a chat response
+    // must never see this as a failure.
+    if (error) {
+      console.error('[AI USAGE] rpc failed:', error.message);
+    } else {
+      // Universal Payload Capture — a denial is observable (operator-facing
+      // only, never surfaced to the end user, never logs payload content
+      // itself) but not an error: the usage event above was still recorded
+      // normally regardless of this status.
+      const _row = data && data[0];
+      if (_row && _row.payload_capture_status === 'gate_disabled') {
+        console.warn('[AI PAYLOAD CAPTURE] gate_disabled', {
+          company_id: fields.company_id,
+          app_id: fields.app_id != null ? fields.app_id : INGESTION_APP_ID,
+          usage_event_id: _row.usage_event_id,
+          payload_capture_status: _row.payload_capture_status
+        });
+      }
+    }
+  } catch (e) {
+    console.error('[AI USAGE] rpc exception:', e.message);
+  }
+  // Opportunistic budget-alert check (AI Cost Control Tower, v9.28/v9.28.01)
+  // — fire-and-forget, never awaited by the caller, so it adds no latency to
+  // the AI response. Never throws outward, same discipline as the insert
+  // above: a telemetry/alerting failure must never surface as a generation
+  // failure to the end user.
+  _checkBudgetAlertsOpportunistic(fields.company_id).catch(function(e) {
+    console.error('[AI BUDGET ALERT] check exception:', e.message);
+  });
+}
+
+// ── Outcome-Based Cost (AI Cost Control Tower v2) ────────────────────────────
+// Caller attribution mode — governs whether and how a call's outcome_id gets
+// set. Four modes, no caller left to fall through a default. This is the
+// single hand-typed copy in the whole app (server.js only) — the frontend
+// fetches the Yield-relevant subset via GET /api/outcome-caller-modes rather
+// than hand-typing a second copy that could drift from this one.
+//
+// 26 entries, each independently verified against live code during Phase 1
+// build verification (not assumed from the design spec) — 25 from the
+// original sweep, plus 'cc-gen-features-cap' added during code review after
+// being missed the first time (a real, live, button-wired caller):
+//   - session_sum_anchor (10): this caller IS one of the five Journey types'
+//     own generation event. Gets outcome_id of that type's active instance.
+//   - yield_anchor (14): this caller IS a yield_ratio type's own generation
+//     event. NEVER receives outcome_id, regardless of what Journey outcome
+//     is active in the session.
+//   - attachable_support (1): incidental to whatever session_sum outcome is
+//     active. Explicit allowlist, nothing implicit.
+//   - general_usage_only (1): real spend, never attributed to any outcome
+//     type. Everything not listed here also falls through to this mode —
+//     see _resolveOutcomeId()'s fallback below, not a silent gap.
+// This proxy serves exactly one app's ingestion path today — named once
+// here rather than as a repeated inline literal, so a future multi-app
+// ingestion integration (out of scope per spec §9) has one place to change
+// instead of every call site that currently assumes Product Studio.
+const INGESTION_APP_ID = 'product-studio';
+
+// Multi-app platform extension: re-keyed from a flat caller->rule map to
+// app_id->caller->rule. A second app writing its own `caller` strings into
+// the same mt_ai_usage_events.caller column could otherwise collide with one
+// of these Product Studio names and silently misattribute usage to the
+// wrong outcome type. Every entry below is unchanged and still
+// Product-Studio-only; a future app gets its own top-level key here.
+const CALLER_ATTRIBUTION_MODE = {
+  [INGESTION_APP_ID]: {
+  'requirement-agent':        { mode: 'session_sum_anchor', outcomeType: 'requirement_brief' },
+  'dm-generate':              { mode: 'session_sum_anchor', outcomeType: 'discovery_map' },
+  'mi-generate':              { mode: 'session_sum_anchor', outcomeType: 'market_intelligence_report' },
+  'mi-docx-gen':              { mode: 'session_sum_anchor', outcomeType: 'market_intelligence_report' },
+  // mi-suggest fires from kpi-tree.js's generateConfirmed() (conditionally,
+  // when Market Intelligence runs before Discovery Map), before that same
+  // call's own dm-generate call — verified during Phase 1 that its success
+  // path (miData/miGenerated/miCapabilities) produces the same terminal
+  // state market-intelligence.js's own miGenerate() success does, so it can
+  // both create/attach AND complete the market_intelligence_report outcome.
+  'mi-suggest':               { mode: 'session_sum_anchor', outcomeType: 'market_intelligence_report' },
+  // Adoption Readiness Report has no single 'arp-gen' caller — verified
+  // during Phase 1 that readiness-canvas.js has FOUR separate callers, none
+  // individually "the" generation event. Outcome row is created at the top
+  // of rcCreatePlan(), before rcAiEnhanceNewPlan() fires the two racing
+  // creation-time calls (arp-change-overview, arp-impact-groups).
+  'arp-change-overview':      { mode: 'session_sum_anchor', outcomeType: 'adoption_readiness_report' },
+  'arp-impact-groups':        { mode: 'session_sum_anchor', outcomeType: 'adoption_readiness_report' },
+  'arp-readiness-actions':    { mode: 'session_sum_anchor', outcomeType: 'adoption_readiness_report' },
+  'arp-launch-narrative':     { mode: 'session_sum_anchor', outcomeType: 'adoption_readiness_report' },
+  'pi-generate':              { mode: 'session_sum_anchor', outcomeType: 'release_plan' },
+
+  'cc-gen-one':                { mode: 'yield_anchor', outcomeType: 'capability', unitsFrom: 'capabilities' },
+  'cc-gen-all':                { mode: 'yield_anchor', outcomeType: 'capability', unitsFrom: 'capabilities' },
+  'cc-regen-metric':           { mode: 'yield_anchor', outcomeType: 'capability', unitsFrom: 'capabilities' },
+  'cc-refine-metric':          { mode: 'yield_anchor', outcomeType: 'capability', unitsFrom: 'fixed_1' },
+  'cc-gen-features-pi':        { mode: 'yield_anchor', outcomeType: 'capability', unitsFrom: 'fixed_1' },
+  'cc-gen-features':           { mode: 'yield_anchor', outcomeType: 'feature', unitsFrom: 'features' },
+  // Verified: capability-canvas.js:3445-3456 parses parsed.features.map(...)
+  // identically to cc-gen-features — a real, live, button-wired per-
+  // capability variant missed in the original 25-entry sweep.
+  'cc-gen-features-cap':       { mode: 'yield_anchor', outcomeType: 'feature', unitsFrom: 'features' },
+  'fc-gen-stories':            { mode: 'yield_anchor', outcomeType: 'story', unitsFrom: 'stories' },
+  'cc-dd-single':              { mode: 'yield_anchor', outcomeType: 'kpi_dictionary_entry', unitsFrom: 'fixed_1' },
+  'cc-dd-batch':               { mode: 'yield_anchor', outcomeType: 'kpi_dictionary_entry', unitsFrom: 'dictionary_entries' },
+  'md-dd-batch':               { mode: 'yield_anchor', outcomeType: 'kpi_dictionary_entry', unitsFrom: 'dictionary_entries' },
+  'ai-recommendations':        { mode: 'yield_anchor', outcomeType: 'ai_recommendation', unitsFrom: 'recommendations' },
+  'diagnostic-leak':           { mode: 'yield_anchor', outcomeType: 'experiment', unitsFrom: 'experiments' },
+  'outcome-pulse-suggest':     { mode: 'yield_anchor', outcomeType: 'experiment', unitsFrom: 'fixed_1' },
+  // Only prototype-brief ever reports a nonzero units_generated (0 or 1) —
+  // prototype-wireframe may only ever report 0, for its own failure. This
+  // protects TWO counts computed in cost-tower-outcomes.js's buildOutcomeTypes():
+  // units (summed across a type's callers) AND attempts (summed the same way,
+  // filtered on non-null). If both callers ever reported 1 on the same
+  // successful attempt, one real prototype would double-count as 2 in BOTH
+  // figures. See scripts/prototype-canvas.js's _pcReportUnitsGenerated() call
+  // sites for the enforcing code.
+  'prototype-wireframe':       { mode: 'yield_anchor', outcomeType: 'prototype', unitsFrom: 'prototypes' },
+  'prototype-brief':           { mode: 'yield_anchor', outcomeType: 'prototype', unitsFrom: 'prototypes' },
+
+  'doc-summary':               { mode: 'attachable_support' },
+
+  'sc-add-feat-hyp-gen':       { mode: 'general_usage_only' }
+
+  // Everything else not listed here also defaults to general_usage_only —
+  // see _resolveOutcomeId()'s fallback below.
+  }
+};
+
+// Thin wrapper over mt_outcome_get_or_create_active — calls the RPC and
+// nothing else. Does NOT re-derive the abandonment-window check in
+// JavaScript; that logic lives in exactly one place, the SQL function.
+// Never throws — an outcome-attribution failure must never block the AI
+// response, same discipline as _insertAiUsageEvent() itself. Returns null
+// on any failure, which _insertAiUsageEvent() already treats as a valid
+// "unattributed" outcome_id.
+async function _getOrCreateActiveOutcome(appId, companyId, sessionId, outcomeTypeId, productId, userId) {
+  if (!supabaseAdmin || !sessionId) return null;
+  try {
+    const { data, error } = await supabaseAdmin.rpc('mt_outcome_get_or_create_active', {
+      p_company_id: companyId,
+      p_app_id: appId,
+      p_session_id: sessionId,
+      p_outcome_type_id: outcomeTypeId,
+      p_product_id: productId,
+      p_user_id: userId
+    });
+    if (error) {
+      console.warn('[OUTCOME] get_or_create_active failed:', outcomeTypeId, error.message);
+      return null;
+    }
+    return data || null;
+  } catch (e) {
+    console.warn('[OUTCOME] get_or_create_active exception:', outcomeTypeId, e.message);
+    return null;
+  }
+}
+
+// Thin wrapper over mt_outcome_attach_support — finds the most recent
+// session_sum outcome of any type in this session (in_progress or
+// completed), per the post-completion attachment rule. Returns null if none
+// exists, which the caller treats as "fall through to general_usage_only,"
+// not an error.
+async function _attachSupportOutcome(sessionId) {
+  if (!supabaseAdmin || !sessionId) return null;
+  try {
+    const { data, error } = await supabaseAdmin.rpc('mt_outcome_attach_support', {
+      p_session_id: sessionId
+    });
+    if (error) {
+      console.warn('[OUTCOME] attach_support failed:', error.message);
+      return null;
+    }
+    return data || null;
+  } catch (e) {
+    console.warn('[OUTCOME] attach_support exception:', e.message);
+    return null;
+  }
+}
+
+// Mode dispatch — the single place CALLER_ATTRIBUTION_MODE gets read to
+// decide outcome_id for a given call. Any caller not in the map (or an
+// unrecognized mode) resolves to general_usage_only (null), same as
+// yield_anchor — a deliberate default, not a missing entry.
+async function _resolveOutcomeId(appId, caller, sessionId, companyId, productId, userId) {
+  const rule = (CALLER_ATTRIBUTION_MODE[appId] || {})[caller] || { mode: 'general_usage_only' };
+  if (rule.mode === 'session_sum_anchor') {
+    return await _getOrCreateActiveOutcome(appId, companyId, sessionId, rule.outcomeType, productId, userId);
+  }
+  if (rule.mode === 'attachable_support') {
+    return await _attachSupportOutcome(sessionId);
+  }
+  return null; // yield_anchor / general_usage_only
+}
+
+// units_generated at insert time — corrected architecture (Phase 1 finding):
+// the proxy never parses a caller's domain JSON (its own reply to the client
+// is the raw text string, never a parsed object), so it cannot count
+// "how many capabilities/stories/etc were in the response" here. The only
+// thing genuinely known at insert time, with no parse required, is whether
+// the call failed — plus one more case added during Phase 4/5 review:
+// unitsFrom==='fixed_1' callers are constant by construction (exactly 1 unit
+// on success, regardless of response content), so they never needed a parse
+// to know their count either. Real array-counted callers still resolve to
+// null on success — their count arrives later via
+// POST /api/usage-events/units-generated, called by the frontend immediately
+// after it parses its own response (Phase 6, not yet wired).
+function _resolveUnitsGeneratedAtInsert(appId, caller, callStatus) {
+  const rule = (CALLER_ATTRIBUTION_MODE[appId] || {})[caller];
+  if (!rule || rule.mode !== 'yield_anchor') return null; // not applicable outside Yield callers
+  if (callStatus === 'error' || callStatus === 'timeout') return 0; // known failure, no parse needed
+  if (rule.unitsFrom === 'fixed_1') return 1; // constant by construction, no parse needed either
+  return null; // array-counted caller, success — real count arrives later via the new endpoint
+}
+
+// ── Budget-alert opportunistic check (v9.28.01) ──────────────────────────────
+// No cron infrastructure exists in this app (AI Cost Control Tower spec,
+// Section 6.6) — piggybacked onto the highest-frequency write this app
+// already makes (a usage-event insert) rather than standing up new
+// scheduling. Throttled per company so a burst of calls doesn't re-run the
+// full spend computation on every single one; a few-minute staleness on
+// alert timing is an accepted tradeoff, not a correctness requirement.
+const _budgetAlertLastCheckedAt = new Map(); // company_id -> ms timestamp
+const BUDGET_ALERT_CHECK_THROTTLE_MS = 5 * 60 * 1000; // 5 minutes
+
+// A generous, explicit cap rather than relying on whatever PostgREST's
+// unconfigured default max-rows happens to be — makes the limit a documented
+// fact instead of an implicit one, and cheap to raise later if real volume
+// ever approaches it.
+const MONTH_TO_DATE_SPEND_ROW_CAP = 20000;
+
+// Month boundary in UTC, not the Node process's host-local time. The
+// dashboard (scripts/cost-tower.js) computes "this month" in the admin's
+// browser-local time, so neither reference can match arbitrary browser
+// timezones exactly — but UTC is at least a fixed, documented reference
+// point that doesn't silently shift if the proxy is ever redeployed to a
+// different server region, which host-local time would. Closing the gap
+// with the admin's actual timezone would need a stored per-company
+// timezone preference; not attempted here.
+function _utcMonthBoundary(offsetMonths) {
+  var d = new Date();
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + offsetMonths, 1));
+}
+
+// Shared "is this effective-dated row active at time T" predicate — used by
+// both _computeMonthToDateSpend() below (historical event timestamps) and
+// _resolveEconomicalModel() further down (the current moment), so the two
+// can't silently disagree about which pricing row applies to the same
+// provider+model at the same point in time.
+function _isPriceRowActiveAt(atMs, fromMs, toMs) {
+  return atMs >= fromMs && (toMs === null || atMs < toMs);
+}
+
+// Shared "the active overall budget row for this company" lookup — used by
+// both _checkBudgetAlertsOpportunistic() and _checkGovernanceState() below,
+// so the definition of "the active budget" can't drift between the two.
+function _fetchActiveBudget(companyId, selectCols) {
+  return supabaseAdmin
+    .from('mt_ai_budgets')
+    .select(selectCols)
+    .eq('company_id', companyId)
+    .eq('app_id', INGESTION_APP_ID)
+    .eq('is_active', true)
+    .maybeSingle();
+}
+
+// Recomputes calculated_cost the same way mt_ai_cost_events_list() does
+// (sql/ai-cost-tower.sql), in JS rather than SQL — supabaseAdmin runs under
+// the service role with no authenticated-user JWT context, so the RPC's own
+// _cost_tower_is_admin() gate (which depends on current_app_user()) cannot
+// be satisfied from here; querying the two tables directly and joining in
+// JS sidesteps that without weakening the RPC's admin gate for real callers.
+// Mirrors the RPC's COALESCE(response_model, requested_model) — falls back
+// only on a real null, not on any other falsy value — so the two formulas
+// can't disagree on which price row a call matches.
+async function _computeMonthToDateSpend(companyId) {
+  const monthStartIso = _utcMonthBoundary(0).toISOString();
+
+  const [{ data: events, error: evErr }, { data: pricing, error: pErr }] = await Promise.all([
+    supabaseAdmin
+      .from('mt_ai_usage_events')
+      .select('provider, requested_model, response_model, input_tokens, output_tokens, cache_creation_5m_tokens, cache_creation_1h_tokens, cache_read_tokens, request_started_at')
+      .eq('company_id', companyId)
+      .eq('app_id', INGESTION_APP_ID)
+      .gte('request_started_at', monthStartIso)
+      .limit(MONTH_TO_DATE_SPEND_ROW_CAP),
+    supabaseAdmin
+      .from('mt_model_pricing')
+      .select('provider, model_name, input_price_per_mtok, output_price_per_mtok, cache_write_5m_price_per_mtok, cache_write_1h_price_per_mtok, cache_read_price_per_mtok, effective_from, effective_to')
+  ]);
+  if (evErr || !events) {
+    if (evErr) console.warn('[AI BUDGET ALERT] usage-events query failed:', evErr.message);
+    return null;
+  }
+  if (pErr || !pricing) {
+    if (pErr) console.warn('[AI BUDGET ALERT] pricing query failed:', pErr.message);
+    return null;
+  }
+
+  // Pre-index pricing by provider|model_name with epoch-ms bounds computed
+  // once, so each event does a short scan within its own model's price
+  // history instead of the whole pricing table, and never allocates a Date
+  // per comparison (was O(events x pricing_rows) with 2 Date allocations
+  // per comparison; now O(events + pricing_rows)).
+  const pricingByKey = {};
+  pricing.forEach(function(p) {
+    const key = p.provider + '|' + p.model_name;
+    (pricingByKey[key] = pricingByKey[key] || []).push({
+      input_price_per_mtok: p.input_price_per_mtok,
+      output_price_per_mtok: p.output_price_per_mtok,
+      cache_write_5m_price_per_mtok: p.cache_write_5m_price_per_mtok,
+      cache_write_1h_price_per_mtok: p.cache_write_1h_price_per_mtok,
+      cache_read_price_per_mtok: p.cache_read_price_per_mtok,
+      effectiveFromMs: new Date(p.effective_from).getTime(),
+      effectiveToMs: p.effective_to ? new Date(p.effective_to).getTime() : null
+    });
+  });
+
+  let total = 0;
+  for (const e of events) {
+    const modelKey = e.response_model != null ? e.response_model : e.requested_model;
+    const candidates = pricingByKey[e.provider + '|' + modelKey];
+    if (!candidates) continue; // unpriced call — excluded, same as the RPC's LEFT JOIN + NULL calculated_cost
+    const atMs = new Date(e.request_started_at).getTime();
+    const match = candidates.find(function(p) {
+      return _isPriceRowActiveAt(atMs, p.effectiveFromMs, p.effectiveToMs);
+    });
+    if (!match) continue;
+    total += (e.input_tokens || 0) / 1000000 * match.input_price_per_mtok
+      + (e.output_tokens || 0) / 1000000 * match.output_price_per_mtok
+      + (e.cache_creation_5m_tokens || 0) / 1000000 * match.cache_write_5m_price_per_mtok
+      + (e.cache_creation_1h_tokens || 0) / 1000000 * match.cache_write_1h_price_per_mtok
+      + (e.cache_read_tokens || 0) / 1000000 * match.cache_read_price_per_mtok;
+  }
+  return total;
+}
+
+async function _checkBudgetAlertsOpportunistic(companyId) {
+  if (!supabaseAdmin || !companyId) return;
+  const lastChecked = _budgetAlertLastCheckedAt.get(companyId) || 0;
+  if (Date.now() - lastChecked < BUDGET_ALERT_CHECK_THROTTLE_MS) return;
+  _budgetAlertLastCheckedAt.set(companyId, Date.now());
+
+  const { data: budget, error: budgetErr } = await _fetchActiveBudget(companyId, '*');
+  if (budgetErr || !budget) return; // no active budget configured — nothing to check against
+
+  const spend = await _computeMonthToDateSpend(companyId);
+  if (spend === null) return;
+
+  const periodStart = _utcMonthBoundary(0).toISOString().slice(0, 10);
+  const periodEnd = _utcMonthBoundary(1).toISOString().slice(0, 10);
+  const pct = (spend / Number(budget.amount)) * 100;
+
+  // Both thresholds are checked independently (not else-if) — if spend jumps
+  // past both between two opportunistic checks, both get their own alert
+  // row, matching how a real-time check would have fired them separately.
+  // The UNIQUE(budget_id, threshold_type, period_start) constraint is what
+  // actually enforces "once per threshold per period," not this code —
+  // a duplicate insert attempt fails with 23505 (unique_violation), caught
+  // and ignored below as the expected, silent outcome.
+  const thresholdsCrossed = [];
+  if (pct >= Number(budget.warn_threshold_pct)) thresholdsCrossed.push({ threshold_type: 'warn', threshold_pct: budget.warn_threshold_pct });
+  if (pct >= Number(budget.escalate_threshold_pct)) thresholdsCrossed.push({ threshold_type: 'escalate', threshold_pct: budget.escalate_threshold_pct });
+
+  for (const t of thresholdsCrossed) {
+    const { error } = await supabaseAdmin.from('mt_ai_alerts').insert({
+      budget_id: budget.budget_id,
+      threshold_type: t.threshold_type,
+      threshold_pct: t.threshold_pct,
+      current_spend: spend,
+      period_start: periodStart,
+      period_end: periodEnd
+    });
+    if (error && error.code !== '23505') {
+      console.warn('[AI BUDGET ALERT] alert insert failed:', error.message);
+    }
+  }
+}
+
+// ── Manual governance enforcement (v9.28.02) ─────────────────────────────────
+// Deliberately not the same hook as _checkBudgetAlertsOpportunistic() above:
+// that check is a passive, throttled, fire-and-forget notification about a
+// call that already happened. This one decides whether a call happens at
+// all, so it must be awaited, must run on every request, and must run
+// before dispatch, not after. An admin's Restrict/Stop selection
+// (scripts/cost-tower.js's actSaveBudget()) IS the live governance state
+// the moment it's saved — this applies it.
+// Auto-reverts to 'notify' once action_on_breach_set_at falls before the
+// start of the current UTC month, computed via the same _utcMonthBoundary()
+// helper _checkBudgetAlertsOpportunistic() already uses above, not a second
+// definition of "current month" that could drift from it. A NULL timestamp
+// paired with a non-'notify' value is treated as already-expired, not as
+// "never expires" — a restriction with no recorded time is not trusted to
+// enforce indefinitely.
+// See the restrict_tier branch in the /api/anthropic handler for why this
+// exists: a conservative safe floor, not a verified per-model ceiling.
+const GOVERNANCE_RESTRICT_MAX_TOKENS_CAP = 4096;
+
+async function _checkGovernanceState(companyId) {
+  if (!supabaseAdmin || !companyId) return { action: 'notify' };
+
+  let budget;
+  try {
+    const { data, error } = await _fetchActiveBudget(companyId, 'budget_id, action_on_breach, action_on_breach_set_at');
+    if (error) throw error;
+    budget = data;
+  } catch (e) {
+    // Fail open: this feature must never be the reason AI generation goes
+    // down company-wide over an unrelated hiccup in a table nobody's AI
+    // call actually needs to succeed.
+    console.warn('[AI GOVERNANCE] budget lookup failed, proceeding as notify:', e.message);
+    return { action: 'notify' };
+  }
+  if (!budget) return { action: 'notify' }; // nothing configured — nothing to enforce
+  if (budget.action_on_breach === 'notify') return { action: 'notify' };
+
+  const monthStartMs = _utcMonthBoundary(0).getTime();
+  const setAtMs = budget.action_on_breach_set_at ? new Date(budget.action_on_breach_set_at).getTime() : null;
+  const isExpired = setAtMs === null || setAtMs < monthStartMs;
+  if (!isExpired) return { action: budget.action_on_breach };
+
+  // Expired — this request is treated as 'notify', and the row is
+  // opportunistically corrected in the background so the admin's own
+  // Budget Configuration card stops showing a restriction that's no longer
+  // enforced. Never awaited: this write must never delay or fail the AI
+  // call itself, same discipline as every other fire-and-forget write in
+  // this file.
+  // Compare-and-swap on the exact action_on_breach_set_at value just read
+  // (not just budget_id + non-'notify'): without this, a fresh admin save
+  // that lands between this read and this write's arrival — same non-
+  // 'notify' value, new timestamp — would still match on budget_id alone
+  // and get silently reverted back to 'notify' by this stale write.
+  let _revertQuery = supabaseAdmin
+    .from('mt_ai_budgets')
+    .update({ action_on_breach: 'notify' })
+    .eq('budget_id', budget.budget_id)
+    .neq('action_on_breach', 'notify');
+  _revertQuery = budget.action_on_breach_set_at
+    ? _revertQuery.eq('action_on_breach_set_at', budget.action_on_breach_set_at)
+    : _revertQuery.is('action_on_breach_set_at', null);
+  _revertQuery
+    .then(function(r) { if (r.error) console.warn('[AI GOVERNANCE] revert-to-notify write failed:', r.error.message); })
+    .catch(function(e) { console.warn('[AI GOVERNANCE] revert-to-notify write exception:', e.message); });
+  return { action: 'notify' };
+}
+
+// Economical-tier model for a provider, active right now. Sourced from
+// mt_model_pricing.tier (already populated per-provider by v1's own
+// migration) rather than duplicating TIER_MODEL_BY_PROVIDER from
+// scripts/api.js into the proxy, which would create a second place that
+// can drift from the first. Mirrors _computeMonthToDateSpend()'s own
+// effective_from/effective_to window match above (JS-side filtering over
+// the fetched rows), applied to "now" instead of a historical event
+// timestamp, rather than introducing a second date-filtering approach.
+async function _resolveEconomicalModel(provider) {
+  try {
+    const { data: rows, error } = await supabaseAdmin
+      .from('mt_model_pricing')
+      .select('model_name, effective_from, effective_to')
+      .eq('provider', provider)
+      .eq('tier', 'economical');
+    if (error || !rows || !rows.length) return null;
+    const nowMs = Date.now();
+    const match = rows.find(function(p) {
+      const fromMs = new Date(p.effective_from).getTime();
+      const toMs = p.effective_to ? new Date(p.effective_to).getTime() : null;
+      return _isPriceRowActiveAt(nowMs, fromMs, toMs);
+    });
+    return match ? match.model_name : null;
+  } catch (e) {
+    console.warn('[AI GOVERNANCE] economical-tier lookup failed:', e.message);
+    return null;
+  }
+}
 
 // ── JWKS client ───────────────────────────────────────────────────────────────
 // Verifies Supabase JWTs signed with ECC P-256 (ES256) via the JWKS endpoint.
@@ -149,17 +707,26 @@ const corsOptions = {
   origin: function (origin, callback) {
     if (!origin) return callback(null, true); // curl, Postman, server-to-server
     if (
-      (ALLOWED_ORIGIN && origin === ALLOWED_ORIGIN) ||
+      ALLOWED_ORIGINS.includes(origin) ||
       LOCAL_ORIGINS.includes(origin) ||
       origin.startsWith('http://localhost') ||
       origin.startsWith('http://127.0.0.1')
     ) {
       return callback(null, true);
     }
-    console.warn('[CORS] Origin blocked:', origin, '— Allowed:', ALLOWED_ORIGIN || '(none set)');
+    console.warn('[CORS] Origin blocked:', origin, '— Allowed:', ALLOWED_ORIGINS.length ? ALLOWED_ORIGINS.join(', ') : '(none set)');
     return callback(new Error('CORS: origin not allowed — ' + origin));
   },
-  methods: ['POST', 'OPTIONS'],
+  // v14 — 'GET' added for /api/embed-info (every other route in this file is
+  // POST-only). Widening the shared allow-list rather than forking a second
+  // CORS config object for one route — this only affects what the BROWSER's
+  // own preflight is told is allowed, not an authorization boundary
+  // (requireAuthStrict + the RA RPCs' own checks are that boundary).
+  // 'PATCH' added for the /v1 ingestion API's two report-back endpoints
+  // (PATCH /v1/outcomes/:id, PATCH /v1/usage-events/.../units-generated) —
+  // without it, a browser-based consumer's preflight would fail and block
+  // both calls before they're ever sent.
+  methods: ['GET', 'POST', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Auth-Token'],
   optionsSuccessStatus: 204
 };
@@ -278,6 +845,39 @@ app.use('/api/team', teamLimiter);
 app.use('/api/team', express.json({ limit: '10kb' }));
 app.use('/api/team', requireAuthStrict);
 
+// ── Outcome-Based Cost — units-generated report-back (AI Cost Control Tower v2)
+// Separate limiter instance, same config, own counter — same convention as
+// every other route in this file.
+const usageEventsLimiter = rateLimit({
+  windowMs: RATE_LIMIT_WINDOW_MIN * 60 * 1000,
+  max: RATE_LIMIT_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    res.status(200).json({
+      error: {
+        type: 'rate_limit_error',
+        message: `Too many requests — limit is ${RATE_LIMIT_MAX} per ${RATE_LIMIT_WINDOW_MIN === 1 ? 'minute' : RATE_LIMIT_WINDOW_MIN + ' minutes'}. Please wait and try again.`
+      }
+    });
+  }
+});
+app.options('/api/usage-events/units-generated', cors(corsOptions));
+app.use('/api/usage-events/units-generated', usageEventsLimiter);
+app.use('/api/usage-events/units-generated', requireAuthStrict);
+app.use('/api/usage-events/units-generated', express.json({ limit: '1kb' }));
+app.use('/api/usage-events/units-generated', requireActiveCompanyMember);
+
+// ── Outcome-Based Cost — caller-modes lookup (AI Cost Control Tower v2) ──────
+// server.js is the only place CALLER_ATTRIBUTION_MODE is hand-typed — the
+// frontend fetches this endpoint once per tab load instead of hand-typing a
+// second copy that could drift from this one. GET, no body, no company
+// scoping needed (this is a static code constant, not tenant data) — same
+// treatment as /api/embed-info.
+app.options('/api/outcome-caller-modes', cors(corsOptions));
+app.use('/api/outcome-caller-modes', usageEventsLimiter);
+app.use('/api/outcome-caller-modes', requireAuthStrict);
+
 // requireCompanyAdmin — the single authorization boundary for every team route.
 // These routes use the service-role client and bypass RLS entirely by design,
 // so this check IS the security boundary, not a UX nicety. Every route reads
@@ -343,7 +943,79 @@ async function requireActiveCompanyMember(req, res, next) {
       console.warn('[AI] membership denied:', req.user.email, '->', companyId);
       return res.status(200).json({ error: { type: 'forbidden_error', message: "You don't have active access to this company." } });
     }
+
+    // Multi-app platform extension (spec §6): access='control_tower' must be
+    // enforced here, not just via the client-side redirect in main.js's
+    // _pgtResolveCompany() — a redirect alone is a real security gap if it's
+    // the only enforcement, since nothing stops a direct API call bypassing
+    // it. is_active_company_member() only returns a boolean with no source
+    // tracked in this repo, so this is a separate, additive query rather than
+    // a change to that RPC's own (unverifiable) body.
+    // Also selects `role` and `is_active` here: role is stashed on req for
+    // the later usage-tracking snapshot (this endpoint's highest-frequency
+    // query would otherwise re-select the identical row a second time
+    // further down this handler purely for that); is_active guards against
+    // a stale/disabled row's access value ever overriding an active one's
+    // if (user_id, company_id) is ever not unique.
+    // Fails open on a query error — same discipline as _checkGovernanceState()
+    // further down this file: an additional business-rule restriction must
+    // never be the reason AI generation goes down company-wide over an
+    // unrelated hiccup on this one query, unlike the membership check above
+    // (which fails closed, since that one gates identity/tenancy itself).
+    try {
+      const { data: memberRow, error: accessErr } = await supabaseAdmin
+        .from('mt_users_companies')
+        .select('role, access')
+        .eq('user_id', req.user.id)
+        .eq('company_id', companyId)
+        .eq('is_active', true)
+        .maybeSingle();
+      if (!accessErr && memberRow) {
+        req.roleAtCall = memberRow.role;
+        if (memberRow.access === 'control_tower') {
+          console.warn('[AI] control_tower-only access denied Product Studio generation:', req.user.email, '->', companyId);
+          return res.status(200).json({ error: { type: 'forbidden_error', message: "Control Tower access doesn't include Product Studio's AI generation features." } });
+        }
+      }
+    } catch (e) {
+      console.warn('[AI] access-tier check exception, proceeding (fail open):', e.message);
+    }
+
+    // v9.13: preserved on req (not just deleted from body) so the AI usage-
+    // tracking insert further down the handler has a trusted, server-verified
+    // company_id to record against — mirrors requireCompanyAdmin's existing
+    // req.companyId pattern below, previously only used by /api/team/*.
+    req.companyId = companyId;
     delete req.body.company_id; // single source of truth from here on, same pattern as requireCompanyAdmin
+
+    // v9.14: server-authoritative provider resolution. The proxy does NOT
+    // trust body.provider for dispatch/billing/usage-attribution — a
+    // manipulated provider field could route a request (and its cost) to a
+    // different platform-owned org key than the company's actual configured
+    // choice, a materially different risk than anything in the app before
+    // this feature. Read directly from mt_company_settings, the same store
+    // the client itself reads/writes (settings-page.js's
+    // _spSaveCompanySettings()) — alongside the membership check already
+    // just performed above. A missing/unreadable row defaults to
+    // 'anthropic', matching appSettings.provider's own client-side default
+    // for a company that predates this feature (never existed in a row yet).
+    try {
+      const { data: settingsRow, error: settingsErr } = await supabaseAdmin
+        .from('mt_company_settings')
+        .select('settings')
+        .eq('company_id', companyId)
+        .maybeSingle();
+      if (settingsErr) {
+        console.warn('[AI] provider resolution: mt_company_settings query failed, defaulting to anthropic:', settingsErr.message);
+        req.resolvedProvider = 'anthropic';
+      } else {
+        req.resolvedProvider = (settingsRow && settingsRow.settings && settingsRow.settings.provider) || 'anthropic';
+      }
+    } catch (e) {
+      console.warn('[AI] provider resolution exception, defaulting to anthropic:', e.message);
+      req.resolvedProvider = 'anthropic';
+    }
+
     next();
   } catch (err) {
     console.error('[AI] membership check exception:', err.message);
@@ -352,17 +1024,439 @@ async function requireActiveCompanyMember(req, res, next) {
 }
 app.use('/api/anthropic', requireActiveCompanyMember);
 
+// ── Generic provider HTTP call (v9.14) ──────────────────────────────────────
+// Replaces the old Anthropic-only inline https.request() block. Same
+// Promise/timeout/error shape as before, just parameterized by the adapter's
+// buildUpstreamRequest() output instead of a hardcoded hostname/path.
+function _callUpstream(upstreamReq, timeoutMs, onTimeoutLog) {
+  const https = require('https');
+  const url = new URL(upstreamReq.url);
+  const postBody = JSON.stringify(upstreamReq.body);
+  const bodyBytes = Buffer.byteLength(postBody, 'utf8');
+
+  return new Promise((resolve, reject) => {
+    let upstreamTimedOut = false;
+    const options = {
+      hostname: url.hostname,
+      port: 443,
+      path: url.pathname + url.search,
+      method: upstreamReq.method || 'POST',
+      headers: Object.assign({ 'Content-Length': bodyBytes }, upstreamReq.headers)
+    };
+
+    const proxyReq = https.request(options, (upstreamRes) => {
+      let raw = '';
+      upstreamRes.on('data', chunk => { raw += chunk; });
+      upstreamRes.on('end', () => {
+        clearTimeout(upstreamTimer);
+        const _responseBytes = Buffer.byteLength(raw, 'utf8');
+        try {
+          const parsed = JSON.parse(raw);
+          resolve({ data: parsed, responseBytes: _responseBytes, httpStatus: upstreamRes.statusCode, requestBytes: bodyBytes });
+        } catch (e) {
+          reject(new Error('Failed to parse upstream response: ' + e.message));
+        }
+      });
+    });
+
+    const upstreamTimer = setTimeout(() => {
+      upstreamTimedOut = true;
+      if (onTimeoutLog) onTimeoutLog();
+      proxyReq.destroy(new Error('Upstream timeout after ' + timeoutMs + 'ms'));
+    }, timeoutMs);
+
+    proxyReq.on('error', (e) => {
+      clearTimeout(upstreamTimer);
+      reject(e);
+    });
+
+    proxyReq.write(postBody);
+    proxyReq.end();
+  });
+}
+
+// ── Streaming upstream call (v-next, Requirement Agent only, opt-in via
+// body.stream — see scripts/requirement-agent.js's _raStreamingEnabled()) ──
+// Mirrors _callUpstream()'s connection/timeout/retry-eligible-error shape
+// EXACTLY up through "did upstream return a 2xx" — this is what keeps the
+// existing retry-once-on-transient-error logic meaningful for streaming
+// calls too: retry decisions are still made before a single byte reaches the
+// client. Only once upstream confirms 2xx does this diverge from
+// _callUpstream() — instead of buffering the full body, it forwards each
+// provider SSE event, translated by adapter.parseSSEEvent() into a
+// normalized {delta, usage} shape, to the client as this proxy's OWN (much
+// simpler) SSE contract: `data: {"delta":"..."}` per chunk, ending with
+// `data: {"done":true}` (or `data: {"error":true,"message":"..."}` if the
+// upstream connection drops mid-stream — no retry is possible at that point,
+// same limitation any streaming client has).
+// Shared "no usage data" shape for _streamUpstreamOnce's two return sites
+// (initial accumulator, mid-stream-error fallback) — kept as one factory so
+// a future field addition/removal only needs one edit, not two in lockstep.
+function _emptyStreamUsage() {
+  return { inputTokens: null, outputTokens: null, totalTokens: null, cacheReadTokens: null, providerUsageRaw: null, resolvedModel: null };
+}
+
+// Anthropic's cache-creation buckets (5m/1h ephemeral writes) have no
+// equivalent on OpenAI/Gemini's raw usage shape (confirmed in
+// proxy/providerAdapters.js's adapter comments), so they're read directly
+// off the raw usage object here rather than normalized into the adapter's
+// shared `usage` shape the way cacheReadTokens is. Shared between the
+// streaming and non-streaming success paths below, which otherwise had to
+// duplicate this same guard+field-access pattern.
+function _extractAnthropicCacheCreation(provider, rawUsage, field) {
+  if (provider !== 'anthropic' || !rawUsage || !rawUsage.cache_creation) return null;
+  var v = rawUsage.cache_creation[field];
+  return v != null ? v : null;
+}
+
+// Universal Payload Capture — cap on how much of a streamed response's text
+// is retained for mt_ai_trace_payloads. Sized against real Requirement
+// Agent response lengths would need production data this build doesn't
+// have; 100KB is a deliberately generous starting point (the existing
+// 2048-byte cap on provider_usage_raw is for a small metadata object, not
+// full response text) and is safe to retune later — it only affects how
+// much of a streamed response's text is persisted, never what the client
+// receives.
+const MAX_PAYLOAD_CAPTURE_BYTES = 100 * 1024;
+
+// Universal Payload Capture — code-review fix: the streaming path's
+// accumulator was explicitly bounded by MAX_PAYLOAD_CAPTURE_BYTES, but
+// request_payload (all paths) and the non-streaming path's response_payload
+// content had no equivalent cap, risking an unbounded mt_ai_trace_payloads
+// JSONB row for a large conversation history or a large generated document.
+// Applied at the JSON-object level (not by slicing text), since neither of
+// these values is raw text — request_payload is {system, messages}, and the
+// non-streaming content is the adapter-normalized response object. Slicing
+// a serialized JSON string to fit a byte cap would produce invalid,
+// unparseable JSON; substituting a small marker object instead keeps every
+// persisted row valid to read back, which is more important here than
+// keeping a truncated prefix of an object that isn't just text.
+function _capJsonPayload(value, maxBytes) {
+  if (value == null) return value;
+  const _bytes = Buffer.byteLength(JSON.stringify(value), 'utf8');
+  if (_bytes <= maxBytes) return value;
+  return { truncated: true, reason: 'exceeds_max_payload_capture_bytes', approx_bytes: _bytes };
+}
+
+// Universal Payload Capture — code-review fix: request_payload/
+// response_payload were hand-built near-identically at all 4
+// _insertAiUsageEvent() call sites in this file; shared here so a future
+// envelope-shape change (a new field, a schema version bump) is one edit,
+// not four kept in sync by hand.
+function _buildRequestPayload(body) {
+  // `body` is null/undefined only at the outer network/timeout catch-all,
+  // where it means "the request never even got this far" — that must stay
+  // a genuine NULL (nothing offered), not an object with null-valued keys
+  // (which the RPC's gate would treat as an offered-but-empty payload).
+  if (!body) return null;
+  return _capJsonPayload({
+    system: body.system != null ? body.system : null,
+    messages: body.messages != null ? body.messages : null
+  }, MAX_PAYLOAD_CAPTURE_BYTES);
+}
+
+function _buildResponsePayload(opts) {
+  return {
+    schema: 'response_payload_v1',
+    streamed: !!opts.streamed,
+    content_type: opts.content_type,
+    error: !!opts.error,
+    content: opts.content != null ? _capJsonPayload(opts.content, MAX_PAYLOAD_CAPTURE_BYTES) : null
+  };
+}
+
+function _streamUpstreamOnce(upstreamReq, timeoutMs, adapter, res, onTimeoutLog) {
+  const https = require('https');
+  const { StringDecoder } = require('string_decoder');
+  const url = new URL(upstreamReq.url);
+  const postBody = JSON.stringify(upstreamReq.body);
+  const bodyBytes = Buffer.byteLength(postBody, 'utf8');
+
+  return new Promise((resolve, reject) => {
+    let upstreamTimedOut = false;
+    // Universal Payload Capture — declared here, not inside the (upstreamRes)
+    // response callback below, because proxyReq.on('error', ...) is a SIBLING
+    // closure (also nested directly in this executor) that needs to read
+    // them too, on a mid-stream abort after headers are already sent. A
+    // `let` inside the response callback's own body would not be visible
+    // there — the same class of bug `usage: _emptyStreamUsage()` in that
+    // error handler already works around by rebuilding a fresh value instead
+    // of referencing the response callback's own `usage` local.
+    let accumulatedText = '';
+    let capturedBytes = 0;
+    let truncated = false;
+    const options = {
+      hostname: url.hostname,
+      port: 443,
+      path: url.pathname + url.search,
+      method: upstreamReq.method || 'POST',
+      headers: Object.assign({ 'Content-Length': bodyBytes }, upstreamReq.headers)
+    };
+
+    const proxyReq = https.request(options, (upstreamRes) => {
+      clearTimeout(upstreamTimer);
+
+      if (upstreamRes.statusCode < 200 || upstreamRes.statusCode >= 300) {
+        // Never stream an error payload — buffer it exactly like _callUpstream
+        // so the existing retry-once logic can inspect it as usual.
+        let raw = '';
+        upstreamRes.on('data', chunk => { raw += chunk; });
+        upstreamRes.on('end', () => {
+          let parsed = null;
+          try { parsed = JSON.parse(raw); } catch (e) { /* leave null — adapter.normalizeHttpError tolerates this */ }
+          resolve({ streamed: false, data: parsed, httpStatus: upstreamRes.statusCode, requestBytes: bodyBytes, responseBytes: Buffer.byteLength(raw, 'utf8') });
+        });
+        return;
+      }
+
+      // Upstream confirmed 2xx — begin forwarding to the client as a stream.
+      // No more retry possible past this point, matching the plan's
+      // documented tradeoff.
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+      let sseBuffer = '';
+      let responseBytes = 0;
+      const usage = _emptyStreamUsage();
+      // Universal Payload Capture — accumulated at the parsedEvt.delta level
+      // (below), never off the raw `chunk` above. A raw network chunk is
+      // exactly what the StringDecoder two lines below exists to protect
+      // against splitting mid-UTF-8-character; parsedEvt.delta is already a
+      // complete, whole JS string (decoded via StringDecoder, framed on a
+      // complete SSE \n\n event, then JSON.parse'd), so accumulating there —
+      // and never slicing the accumulated string or a buffer afterward — is
+      // what keeps a truncated capture from ever landing mid-character.
+      // (accumulatedText/capturedBytes/truncated themselves are declared up
+      // in the executor scope above, not here — see that comment.)
+      // StringDecoder (Node core), not Buffer#toString('utf8') per chunk —
+      // a multi-byte UTF-8 character split across two TCP chunks would
+      // otherwise decode independently in each chunk and come out as a
+      // replacement character (U+FFFD) instead of being reassembled.
+      // StringDecoder carries incomplete trailing bytes over to the next
+      // .write() call, same guarantee scripts/api.js's client-side
+      // TextDecoder(..., {stream:true}) already provides.
+      const decoder = new StringDecoder('utf8');
+
+      upstreamRes.on('data', (chunk) => {
+        responseBytes += chunk.length;
+        sseBuffer += decoder.write(chunk);
+        const events = sseBuffer.split('\n\n');
+        sseBuffer = events.pop(); // last entry may be a partial event — keep buffering it
+        events.forEach((evt) => {
+          if (!evt.trim()) return;
+          let parsedEvt;
+          try { parsedEvt = adapter.parseSSEEvent(evt); } catch (e) { parsedEvt = { delta: null, usage: null, done: false }; }
+          if (parsedEvt.delta) {
+            try { res.write('data: ' + JSON.stringify({ delta: parsedEvt.delta }) + '\n\n'); } catch (e) {}
+            // Payload-capture accumulation is always secondary to forwarding
+            // above — it never gates or delays what the client receives, and
+            // a failure here must never break stream delivery. Stopping
+            // accumulation at the cap only affects what gets persisted.
+            if (!truncated) {
+              const _deltaBytes = Buffer.byteLength(parsedEvt.delta, 'utf8');
+              if (capturedBytes + _deltaBytes <= MAX_PAYLOAD_CAPTURE_BYTES) {
+                accumulatedText += parsedEvt.delta;
+                capturedBytes += _deltaBytes;
+              } else {
+                truncated = true;
+              }
+            }
+          }
+          if (parsedEvt.usage) {
+            if (parsedEvt.usage.inputTokens != null) usage.inputTokens = parsedEvt.usage.inputTokens;
+            if (parsedEvt.usage.outputTokens != null) usage.outputTokens = parsedEvt.usage.outputTokens;
+            if (parsedEvt.usage.totalTokens != null) usage.totalTokens = parsedEvt.usage.totalTokens;
+            if (parsedEvt.usage.cacheReadTokens != null) usage.cacheReadTokens = parsedEvt.usage.cacheReadTokens;
+            // Shallow merge, not overwrite: Anthropic's message_start event carries
+            // cache_creation/cache_read_input_tokens, message_delta carries only
+            // output_tokens — a wholesale overwrite here silently dropped
+            // message_start's cache fields once message_delta arrived (spec
+            // Section 11 item 11). Confirmed this never affected output_tokens
+            // itself, which is guarded per-field above, independent of this object.
+            if (parsedEvt.usage.providerUsageRaw != null) usage.providerUsageRaw = Object.assign({}, usage.providerUsageRaw, parsedEvt.usage.providerUsageRaw);
+          }
+          if (parsedEvt.resolvedModel != null) usage.resolvedModel = parsedEvt.resolvedModel;
+        });
+      });
+
+      upstreamRes.on('end', () => {
+        try { res.write('data: ' + JSON.stringify({ done: true }) + '\n\n'); res.end(); } catch (e) {}
+        resolve({ streamed: true, usage, requestBytes: bodyBytes, responseBytes, accumulatedText, capturedBytes, truncated });
+      });
+    });
+
+    const upstreamTimer = setTimeout(() => {
+      upstreamTimedOut = true;
+      if (onTimeoutLog) onTimeoutLog();
+      proxyReq.destroy(new Error('Upstream timeout after ' + timeoutMs + 'ms'));
+    }, timeoutMs);
+
+    proxyReq.on('error', (err) => {
+      clearTimeout(upstreamTimer);
+      if (res.headersSent) {
+        // Streaming had already begun to the client — end it with an error
+        // marker. No retry possible at this point (mirrors the non-streaming
+        // path's own rule: a request that may have already reached the
+        // provider is not safely retryable).
+        try {
+          res.write('data: ' + JSON.stringify({ error: true, message: upstreamTimedOut ? 'Upstream timed out mid-stream.' : ('Stream interrupted: ' + (err.message || 'unknown error')) }) + '\n\n');
+          res.end();
+        } catch (e) {}
+        // Whatever text was accumulated up to the abort point is kept as a
+        // genuine partial — `truncated` here still means "the byte cap was
+        // hit," not "this is a partial capture because of the abort," so an
+        // abort with no cap hit correctly reports truncated: false.
+        resolve({ streamed: true, usage: _emptyStreamUsage(), requestBytes: bodyBytes, responseBytes: 0, midStreamError: true, accumulatedText, capturedBytes, truncated });
+      } else {
+        // No response ever received (headers never sent) — a genuine
+        // transport-level failure, same as _callUpstream()'s own
+        // reject(e) above. Rejecting (not resolving) is what makes
+        // _handleStreamingRequest's `catch (transportErr) { throw
+        // transportErr; }` actually reachable, so this falls through to
+        // the outer handler's proper timeout/network error path instead
+        // of being misread as an HTTP error with undefined status.
+        reject(err);
+      }
+    });
+
+    proxyReq.write(postBody);
+    proxyReq.end();
+  });
+}
+
+// Full request lifecycle for a streaming call — same retry-once-on-transient-
+// error semantics and same mt_ai_usage_events logging as the non-streaming
+// path below, just restructured around _streamUpstreamOnce()'s
+// {streamed, ...} result shape. Only reached when body.stream is true (opt-in,
+// currently only ever sent by Requirement Agent when its localStorage
+// streaming flag is on — see scripts/requirement-agent.js).
+async function _handleStreamingRequest(req, res, ctx) {
+  const { provider, adapter, upstreamReq, _caller, body, _requestStartedAt, _clientCallId, _sessionId, _sessionType, _productId, _userRoleAtCall, _settingsMode, _settingsModel, _selectionRule, _promptVersion, UPSTREAM_TIMEOUT_MS, _outcomeId, _clientTraceId, _agentName } = ctx;
+  upstreamReq.body.stream = true;
+
+  let _attempt = 0;
+  const MAX_ATTEMPTS = 2;
+  while (true) {
+    _attempt++;
+    let outcome;
+    try {
+      outcome = await _streamUpstreamOnce(upstreamReq, UPSTREAM_TIMEOUT_MS, adapter, res, function () {
+        console.error('[AI TIMEOUT]', { provider, caller: _caller, timeoutMs: UPSTREAM_TIMEOUT_MS, model: body.model, attempt: _attempt, streaming: true });
+      });
+    } catch (transportErr) {
+      throw transportErr; // no response ever received — outer catch handles usage-tracking + client response
+    }
+
+    if (outcome.streamed) {
+      const _durationMs = Date.now() - _requestStartedAt.getTime();
+      await _insertAiUsageEvent({
+        client_call_id: _clientCallId, provider, company_id: req.companyId, product_id: _productId,
+        session_id: _sessionId, session_type: _sessionType, user_id: req.user.id, user_role_at_call: _userRoleAtCall,
+        caller: _caller, prompt_version: _promptVersion, requested_model: body.model, response_model: outcome.usage.resolvedModel,
+        settings_mode: _settingsMode, settings_model: _settingsModel, selection_rule: _selectionRule,
+        input_tokens: outcome.usage.inputTokens, output_tokens: outcome.usage.outputTokens,
+        // Anthropic-specific cache-write buckets, same as the non-streaming path
+        // below — only meaningful once the merge-bug fix above lets
+        // providerUsageRaw actually retain message_start's cache_creation object.
+        cache_creation_5m_tokens: _extractAnthropicCacheCreation(provider, outcome.usage.providerUsageRaw, 'ephemeral_5m_input_tokens'),
+        cache_creation_1h_tokens: _extractAnthropicCacheCreation(provider, outcome.usage.providerUsageRaw, 'ephemeral_1h_input_tokens'),
+        cache_read_tokens: outcome.usage.cacheReadTokens,
+        provider_usage_raw: outcome.usage.providerUsageRaw,
+        status: outcome.midStreamError ? 'error' : 'success',
+        provider_http_status: 200,
+        error_type: outcome.midStreamError ? 'stream_interrupted' : null,
+        failure_phase: outcome.midStreamError ? 'outbound_call' : null,
+        request_started_at: _requestStartedAt.toISOString(), duration_ms: _durationMs,
+        request_bytes: outcome.requestBytes, response_bytes: outcome.responseBytes,
+        outcome_id: _outcomeId,
+        units_generated: _resolveUnitsGeneratedAtInsert(INGESTION_APP_ID, _caller, outcome.midStreamError ? 'error' : 'success'),
+        client_trace_id: _clientTraceId, agent_name: _agentName,
+        request_payload: _buildRequestPayload(body),
+        response_payload: _buildResponsePayload({
+          streamed: true, content_type: 'accumulated_text', error: outcome.midStreamError,
+          content: { text: outcome.accumulatedText, truncated: outcome.truncated,
+                     captured_bytes: outcome.capturedBytes, max_capture_bytes: MAX_PAYLOAD_CAPTURE_BYTES }
+        })
+      });
+      return; // res already ended inside _streamUpstreamOnce
+    }
+
+    // Not streamed: either a pre-stream buffered HTTP error, or (thrown above)
+    // a transport failure. Reaching here means a buffered error response.
+    const _errVerdict = adapter.normalizeHttpError(outcome.data, outcome.httpStatus);
+    if (_errVerdict.retryable && _attempt < MAX_ATTEMPTS) {
+      console.warn('[AI RETRY]', { provider, caller: _caller, httpStatus: outcome.httpStatus, normalizedErrorCode: _errVerdict.normalizedErrorCode, attempt: _attempt, streaming: true });
+      await new Promise(function (r) { setTimeout(r, 1000); });
+      continue;
+    }
+
+    const _durationMs = Date.now() - _requestStartedAt.getTime();
+    await _insertAiUsageEvent({
+      client_call_id: _clientCallId, provider, company_id: req.companyId, product_id: _productId,
+      session_id: _sessionId, session_type: _sessionType, user_id: req.user.id, user_role_at_call: _userRoleAtCall,
+      caller: _caller, prompt_version: _promptVersion, requested_model: body.model, response_model: null,
+      settings_mode: _settingsMode, settings_model: _settingsModel, selection_rule: _selectionRule,
+      input_tokens: null, output_tokens: null, cache_creation_5m_tokens: null, cache_creation_1h_tokens: null, cache_read_tokens: null,
+      provider_usage_raw: null, status: 'error', provider_http_status: outcome.httpStatus,
+      error_type: _errVerdict.normalizedErrorCode, failure_phase: 'outbound_call',
+      request_started_at: _requestStartedAt.toISOString(), duration_ms: _durationMs,
+      request_bytes: outcome.requestBytes, response_bytes: outcome.responseBytes,
+      outcome_id: _outcomeId,
+      units_generated: _resolveUnitsGeneratedAtInsert(INGESTION_APP_ID, _caller, 'error'),
+      client_trace_id: _clientTraceId, agent_name: _agentName,
+      // The request was already fully constructed before this buffered
+      // error response came back — request_payload is offered the same as
+      // every other call, regardless of outcome. No response text exists to
+      // capture here (the provider never confirmed 2xx), matching how the
+      // non-streaming error path also persists content: null.
+      request_payload: _buildRequestPayload(body),
+      response_payload: _buildResponsePayload({ streamed: true, content_type: 'accumulated_text', error: true, content: null })
+    });
+    return res.status(200).json({ error: { type: _errVerdict._rawType || _errVerdict.normalizedErrorCode, message: _errVerdict.safeErrorMessage } });
+  }
+}
+
 // ── Main proxy endpoint ───────────────────────────────────────────────────────
 app.post('/api/anthropic', async (req, res) => {
+  // Hoisted above the try — a const/let declared inside a try block is a
+  // separate block scope from its sibling catch block and is never visible
+  // there regardless of assignment timing (typeof on it inside catch always
+  // reads 'undefined', never the real value, and never throws either, which
+  // is what let this go unnoticed). Every `typeof X !== 'undefined'` guard
+  // in the catch block below was silently always false before this fix,
+  // making the entire error/timeout-path usage-tracking insert dead code.
+  //
+  // `body` was missed by that same fix and stayed a `const` declared inside
+  // the try (below) — unlike every other name in this list, the catch
+  // block's own reference to it (`body && body.model`) is a bare reference,
+  // not a `typeof` guard, so it threw ReferenceError on every single
+  // network-failure/timeout call reaching that catch block, rather than
+  // silently reading as unset like the others did before their fix. Hoisted
+  // here for the same reason, so both the existing `requested_model` read
+  // and this build's new `request_payload` read are actually reachable.
+  let _requestStartedAt, _clientCallId, _sessionId, _settingsMode, _settingsModel,
+      _selectionRule, _promptVersion, _productId, _sessionType, _userRoleAtCall,
+      _outcomeId, _caller, bodyBytes, _clientTraceId, _agentName, body;
   try {
+    // v9.14: provider is resolved server-side by requireActiveCompanyMember
+    // above (req.resolvedProvider) — NEVER taken from body.provider, which
+    // the client may send for diagnostics only (see scripts/api.js's
+    // callAPI()). This is the single source of truth for which adapter runs,
+    // which env var/BYOK-header key gets used, and what gets logged to
+    // mt_ai_usage_events.provider.
+    const provider = req.resolvedProvider || 'anthropic';
+    const adapter = getAdapter(provider);
+    if (!adapter) {
+      console.error('[AI] no adapter for resolved provider:', provider);
+      return res.status(200).json({ error: { type: 'invalid_request', message: 'This company\'s configured AI provider is not currently supported.' } });
+    }
+
     // ── API key resolution ──
     // Priority 1: BYOK key from Authorization: Bearer header (user-supplied)
-    // Priority 2: shared org key from ANTHROPIC_API_KEY env var (Render dashboard)
+    // Priority 2: shared org key from the resolved provider's env var (Render dashboard)
     // If user supplies a BYOK key, it is always used — org key is never a silent fallback
-    // for an invalid BYOK. Invalid BYOK → Anthropic returns auth error → surfaces to user.
+    // for an invalid BYOK. Invalid BYOK → provider returns auth error → surfaces to user.
     const authHeader = req.headers['authorization'] || '';
     const byokKey = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
-    let apiKey = byokKey || ORG_API_KEY;
+    let apiKey = byokKey || ORG_API_KEY_BY_PROVIDER[provider] || '';
 
     if (!apiKey) {
       return res.status(200).json({
@@ -374,7 +1468,7 @@ app.post('/api/anthropic', async (req, res) => {
     }
 
     // Validate request body
-    const body = req.body;
+    body = req.body;
     if (!body || !body.model || !body.messages) {
       return res.status(200).json({
         error: {
@@ -384,97 +1478,398 @@ app.post('/api/anthropic', async (req, res) => {
       });
     }
 
-    // ── Forward to Anthropic ──
-    const https = require('https');
-    const _caller = body._caller || 'unknown';
-    const anthropicBody = {
+    // ── Manual governance enforcement (v9.28.02) ──
+    // Runs before isKnownModel()/buildUpstreamRequest() below, so a Stop
+    // response never reaches either, and a Restrict substitution is in
+    // place before both see body.model. Overrides whatever body.model the
+    // client sent for any reason — an optimized default, a user's own
+    // explicit pin, or the batch_threshold_override path in
+    // feature-canvas.js — there is no per-call-site exemption here, the
+    // block/substitution happens before any of those distinctions are read.
+    const _governance = await _checkGovernanceState(req.companyId);
+    if (_governance.action === 'stop') {
+      return res.status(200).json({
+        error: {
+          type: 'usage_stopped',
+          message: 'AI generation is stopped for the rest of this billing period. An admin restricted usage after spend crossed budget.'
+        }
+      });
+    }
+    if (_governance.action === 'restrict_tier') {
+      const _econModel = await _resolveEconomicalModel(provider);
+      // isKnownModel() re-check: mt_model_pricing.tier (SQL-editable) and
+      // MODEL_CATALOG_BY_PROVIDER (hardcoded here) have no link keeping
+      // them in sync — if a tier-tagged model has since dropped out of the
+      // catalog, treat that exactly like "no economical row found" (fail
+      // open) rather than letting a stale tier tag fail the call closed at
+      // the isKnownModel() check just below.
+      if (_econModel && isKnownModel(provider, _econModel)) {
+        // Silent substitution, not a rejection — matches whether or not
+        // the client's original body.model was already the economical
+        // model. selection_rule is overwritten too, so Selection Economics
+        // (Cost Control Tower) attributes this call to the admin
+        // restriction instead of whatever routing the client computed.
+        body.model = _econModel;
+        body.selection_rule = 'governance_restricted';
+        // Conservative safe floor, not a per-model verified ceiling — this
+        // codebase has no per-model max-output-tokens table
+        // (MODEL_CATALOG_BY_PROVIDER is name-only). Caps a caller's
+        // original max_tokens (which may have been tuned for a larger
+        // model, e.g. pi-planning.js/market-intelligence.js) so a
+        // restricted call degrades gracefully instead of risking an
+        // upstream invalid_request_error from exceeding the economical
+        // model's real ceiling.
+        if (typeof body.max_tokens === 'number' && body.max_tokens > GOVERNANCE_RESTRICT_MAX_TOKENS_CAP) {
+          body.max_tokens = GOVERNANCE_RESTRICT_MAX_TOKENS_CAP;
+        }
+      } else {
+        // No economical-tier row for this provider today, or its tagged
+        // model isn't in this file's known-model catalog — fail open:
+        // proceed with the client's original body.model unchanged, never
+        // block the call or forward a null/invalid model string upstream.
+        if (_econModel) {
+          console.warn('[AI GOVERNANCE] economical-tier model not in known catalog, proceeding with original model:', provider, _econModel);
+        } else {
+          console.warn('[AI GOVERNANCE] no economical-tier pricing row for provider, proceeding with original model:', provider);
+        }
+      }
+    }
+
+    // ── Runtime model validation (Section 6.3's fail-fast requirement) ──
+    // Reject an unrecognized model for the resolved provider BEFORE spending
+    // an upstream call on it — a stale client cache or tampered request
+    // sending a model string that was never actually offered for this
+    // provider should surface a clear proxy-side error, not a confusing
+    // upstream one.
+    if (!isKnownModel(provider, body.model)) {
+      console.warn('[AI] rejected unknown model for provider:', provider, body.model);
+      return res.status(200).json({
+        error: { type: 'invalid_request', message: 'Unsupported model for the configured AI provider.' }
+      });
+    }
+
+    _caller = body._caller || 'unknown';
+    const upstreamReq = adapter.buildUpstreamRequest({
       model:      body.model,
       max_tokens: body.max_tokens,
       system:     body.system,
       messages:   body.messages
-    };
-    const postBody = JSON.stringify(anthropicBody);
-    const bodyBytes = Buffer.byteLength(postBody, 'utf8');
+    }, apiKey);
+    const bodyBytesPreview = Buffer.byteLength(JSON.stringify(upstreamReq.body), 'utf8');
 
-    console.log('[AI OUT]', { caller: _caller, model: body.model, max_tokens: body.max_tokens, bodyBytes });
+    console.log('[AI OUT]', { provider, caller: _caller, model: body.model, max_tokens: body.max_tokens, bodyBytes: bodyBytesPreview });
+
+    // ── AI usage-tracking (v9.13) ──
+    // Fields read off the ORIGINAL request body (never anthropicBody above,
+    // which is deliberately narrowed to only what Anthropic itself needs —
+    // these fields must never be forwarded upstream). Marked started here,
+    // before the outbound call begins, so duration_ms and the pricing-lookup
+    // timestamp both reflect the actual Anthropic call, not proxy overhead
+    // from auth/membership checks that already ran before this point.
+    _requestStartedAt = new Date();
+    _clientCallId = body.client_call_id || null;
+    _sessionId    = body.session_id || null;
+    _settingsMode  = body.settings_mode || null;
+    _settingsModel = body.settings_model || null;
+    _selectionRule = body.selection_rule || null;
+    _promptVersion = body.prompt_version || null;
+    // AI Trace Layer — client_trace_id is the only trace-continuation key
+    // (Invariant 2); agent_name is required server-side (by the RPC) only
+    // when client_trace_id is present. Every caller that doesn't send these
+    // (everything except Requirement Agent) gets null for both, same as
+    // every other optional usage-tracking field above.
+    _clientTraceId = body.client_trace_id || null;
+    _agentName = body.agent_name || null;
+
+    // v9.13.01: product_id is now derived server-side from session_id ->
+    // mt_sessions.product_id, NOT trusted from the client's body.product_id
+    // (activeProfileId on the frontend). Confirmed via real production data
+    // that activeProfileId — a Home-tab-scoped UI variable — can be null at
+    // generation time even mid-session with a genuine active product,
+    // producing silent NULL product_id rows in mt_ai_usage_events. Since
+    // mt_sessions.product_id is now NOT NULL (every session is launched
+    // against exactly one product, enforced at both the UI and DB layer),
+    // this lookup is authoritative whenever a session_id is present. The
+    // client-sent body.product_id is kept ONLY as a fallback for the rare
+    // caller with no session at all (e.g. doc-summary on a company-level
+    // document) — never overriding a real session's own value.
+    _productId = body.product_id || null;
+    // v9.15: session_type is set only by Guided Launch (session_type:'ChatCanvas'),
+    // whose session_id points at mt_intake_sessions, not mt_sessions — the lookup
+    // below would just miss and silently do nothing, but skipping it outright is
+    // the correct behavior, not a fallback: body.product_id is already the real
+    // value in that case (Guided Launch always knows its product directly, no
+    // Discovery Map session exists yet to derive it from).
+    _sessionType = body.session_type || null;
+    if (_sessionId && !_sessionType) {
+      try {
+        const { data: _sessRow } = await supabaseAdmin
+          .from('mt_sessions')
+          .select('product_id')
+          .eq('id', _sessionId)
+          .maybeSingle();
+        if (_sessRow && _sessRow.product_id) _productId = _sessRow.product_id;
+      } catch (e) {
+        console.warn('[AI USAGE] session product_id lookup failed:', e.message);
+      }
+    }
+
+    // Role snapshot at call time — deliberately a SEPARATE small query, not
+    // squeezed out of requireActiveCompanyMember's is_active_company_member()
+    // RPC above, which returns a plain boolean and has no role to give.
+    // Modifying that RPC's return shape would be a security-definer-function
+    // change shared with the (currently dormant) Netlify proxy path and
+    // deserves its own scrutiny — out of scope for a telemetry addition.
+    // Snapshotting here means later role changes never retroactively alter
+    // what this historical row says the caller's role was at the time.
+    // requireActiveCompanyMember already selected this same row's role
+    // (for its own access-tier check) and stashed it on req.roleAtCall —
+    // reuse it instead of re-querying the identical row a second time on
+    // this endpoint's hot path. Only falls back to a fresh query if that
+    // didn't happen (e.g. the access-tier query itself failed open above).
+    _userRoleAtCall = null;
+    if (req.roleAtCall !== undefined) {
+      _userRoleAtCall = req.roleAtCall;
+    } else {
+      try {
+        const { data: _roleRow } = await supabaseAdmin
+          .from('mt_users_companies')
+          .select('role')
+          .eq('user_id', req.user.id)
+          .eq('company_id', req.companyId)
+          .maybeSingle();
+        _userRoleAtCall = _roleRow ? _roleRow.role : null;
+      } catch (e) {
+        console.warn('[AI USAGE] role snapshot failed:', e.message);
+      }
+    }
+
+    // Outcome-Based Cost (AI Cost Control Tower v2) — resolved once per
+    // request, before the streaming/non-streaming split, so both paths use
+    // the same outcome_id rather than each risking its own separate
+    // get-or-create call. Never blocks the AI call on failure — degrades to
+    // null (unattributed), same discipline as the product_id/role lookups
+    // just above.
+    // INGESTION_APP_ID — this proxy is Product Studio's own ingestion path;
+    // a future app's ingestion is a separate, out-of-scope integration
+    // (spec §9), not a value derived from anything on req here.
+    _outcomeId = null;
+    try {
+      _outcomeId = await _resolveOutcomeId(INGESTION_APP_ID, _caller, _sessionId, req.companyId, _productId, req.user.id);
+    } catch (e) {
+      console.warn('[OUTCOME] resolution failed:', e.message);
+    }
 
     // v8.98: per-caller timeout — raising PI's ceiling should not tie up the
     // proxy longer for every other (smaller, faster) caller if THEY hang.
+    // v9.14: this remains the single total request deadline per Section 5.5
+    // — a retry below (if any) happens WITHIN one overall attempt cycle, not
+    // as an independent extra timeout window stacked on top.
     const TIMEOUT_BY_CALLER = { 'pi-generate': 150000, 'mi-docx-gen': 150000 };
     const UPSTREAM_TIMEOUT_MS = TIMEOUT_BY_CALLER[_caller] || 120000;
 
-    const data = await new Promise((resolve, reject) => {
-      let upstreamTimedOut = false;
+    // ── Streaming opt-in (v-next, Requirement Agent only) ──
+    // body.stream is only ever sent true by Requirement Agent, and only when
+    // its own localStorage flag is on (see scripts/requirement-agent.js's
+    // _raStreamingEnabled()) — every other caller's request has no `stream`
+    // field and falls straight through to the unchanged buffered path below.
+    if (body.stream === true) {
+      return await _handleStreamingRequest(req, res, {
+        provider, adapter, upstreamReq, _caller, body, _requestStartedAt,
+        _clientCallId, _sessionId, _sessionType, _productId, _userRoleAtCall,
+        _settingsMode, _settingsModel, _selectionRule, _promptVersion, UPSTREAM_TIMEOUT_MS,
+        _outcomeId, _clientTraceId, _agentName
+      });
+    }
 
-      const options = {
-        hostname: 'api.anthropic.com',
-        port: 443,
-        path: '/v1/messages',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': bodyBytes,
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01'
-        }
-      };
-
-      const proxyReq = https.request(options, (anthropicRes) => {
-        let raw = '';
-        console.log('[AI RESPONSE START]', { statusCode: anthropicRes.statusCode });
-        anthropicRes.on('data', chunk => { raw += chunk; });
-        anthropicRes.on('end', () => {
-          clearTimeout(upstreamTimer);
-          console.log('[AI RESPONSE END]', {
-            statusCode: anthropicRes.statusCode,
-            responseBytes: Buffer.byteLength(raw, 'utf8')
-          });
-          try {
-            const parsed = JSON.parse(raw);
-            if (anthropicRes.statusCode === 403) {
-              resolve({
-                error: {
-                  type: 'permission_error',
-                  message: 'Your API key is blocked from server-side access. Check your Anthropic org policy settings, or use a personal API key.'
-                }
-              });
-            } else {
-              resolve(parsed);
-            }
-          } catch (e) {
-            reject(new Error('Failed to parse Anthropic response: ' + e.message));
-          }
+    // ── Upstream call, with a single bounded retry on transient errors only
+    // (Section 5.5) ──
+    // Retried ONLY when a response was actually received and the adapter
+    // classifies its error as transient (rate-limit/overload/5xx) — never on
+    // invalid-key, permission, malformed-request, or content-safety errors,
+    // and never on a transport-level failure/timeout, where the upstream
+    // call may have already reached the provider and a retry risks a
+    // double-billed duplicate. The client does not layer its own retry on
+    // top of this (see scripts/api.js's callAPI() — single fetch, no retry).
+    let _result;
+    let _attempt = 0;
+    const MAX_ATTEMPTS = 2;
+    while (true) {
+      _attempt++;
+      try {
+        _result = await _callUpstream(upstreamReq, UPSTREAM_TIMEOUT_MS, function(){
+          console.error('[AI TIMEOUT]', { provider, caller: _caller, timeoutMs: UPSTREAM_TIMEOUT_MS, model: body.model, attempt: _attempt });
         });
-      });
+      } catch (transportErr) {
+        // Transport-level failure (network error or our own timeout-forced
+        // destroy) — never retried, per Section 5.5's ambiguous-outcome rule.
+        // Rethrown to the outer catch block, which handles the
+        // no-response-at-all usage-tracking path.
+        throw transportErr;
+      }
+      if (_result.httpStatus >= 200 && _result.httpStatus < 300) break; // success — no retry needed
+      const _errVerdict = adapter.normalizeHttpError(_result.data, _result.httpStatus);
+      if (_errVerdict.retryable && _attempt < MAX_ATTEMPTS) {
+        console.warn('[AI RETRY]', { provider, caller: _caller, httpStatus: _result.httpStatus, normalizedErrorCode: _errVerdict.normalizedErrorCode, attempt: _attempt });
+        await new Promise(function(r){ setTimeout(r, 1000); }); // fixed backoff — neither provider's retry-after field is confirmed yet (see spec Section 7)
+        continue;
+      }
+      break; // not retryable, or out of attempts — fall through with the error response as-is
+    }
 
-      const upstreamTimer = setTimeout(() => {
-        upstreamTimedOut = true;
-        console.error('[AI TIMEOUT]', { caller: _caller, timeoutMs: UPSTREAM_TIMEOUT_MS, model: body.model, max_tokens: body.max_tokens });
-        proxyReq.destroy(new Error('Anthropic upstream timeout after ' + UPSTREAM_TIMEOUT_MS + 'ms'));
-      }, UPSTREAM_TIMEOUT_MS);
+    const { data, responseBytes, httpStatus, requestBytes } = _result;
+    bodyBytes = requestBytes;
+    const _durationMs = Date.now() - _requestStartedAt.getTime();
 
-      proxyReq.on('error', (e) => {
-        clearTimeout(upstreamTimer);
-        console.error('[AI ERROR]', { caller: _caller, message: e.message, timeout: upstreamTimedOut });
-        reject(e);
-      });
+    // ── AI usage-tracking insert — success/response-received path (v9.13,
+    // provider-aware v9.14) ──
+    // "Success" here means a response was actually received from the
+    // provider, which may itself carry an error payload (e.g. an overloaded
+    // response) — that still counts as status='error' with a real
+    // duration/response size, distinct from the outer catch block below,
+    // which only fires when NO response was ever received at all (network
+    // failure, timeout).
+    const _isErrorPayload = !(httpStatus >= 200 && httpStatus < 300);
+    const _normalized = _isErrorPayload ? adapter.normalizeHttpError(data, httpStatus) : adapter.normalizeSuccess(data);
+    if (!_isErrorPayload) _normalized.requestedModel = body.model;
 
-      proxyReq.write(postBody);
-      proxyReq.end();
+    await _insertAiUsageEvent({
+      client_call_id: _clientCallId,
+      provider: provider, // server-resolved, never the client-echoed body.provider — see requireActiveCompanyMember above
+      company_id: req.companyId,
+      product_id: _productId,
+      session_id: _sessionId,
+      session_type: _sessionType,
+      user_id: req.user.id,
+      user_role_at_call: _userRoleAtCall,
+      caller: _caller,
+      prompt_version: _promptVersion,
+      requested_model: body.model,
+      response_model: _isErrorPayload ? null : _normalized.resolvedModel,
+      settings_mode: _settingsMode,
+      settings_model: _settingsModel,
+      selection_rule: _selectionRule,
+      input_tokens: _isErrorPayload ? null : _normalized.usage.inputTokens,
+      output_tokens: _isErrorPayload ? null : _normalized.usage.outputTokens,
+      // Anthropic-specific cache-write buckets — remain null for non-Anthropic
+      // providers, whose usage detail (if any) belongs in provider_usage_raw
+      // instead of being force-fit into these Anthropic-shaped columns.
+      cache_creation_5m_tokens: !_isErrorPayload ? _extractAnthropicCacheCreation(provider, data.usage, 'ephemeral_5m_input_tokens') : null,
+      cache_creation_1h_tokens: !_isErrorPayload ? _extractAnthropicCacheCreation(provider, data.usage, 'ephemeral_1h_input_tokens') : null,
+      // Cache-read is a provider-neutral concept, unlike the two buckets above —
+      // sourced through the adapter's normalized usage shape (Build B Part 1),
+      // same as input_tokens/output_tokens two lines up, rather than reading
+      // data.usage directly per provider.
+      cache_read_tokens: (!_isErrorPayload && _normalized.usage) ? _normalized.usage.cacheReadTokens : null,
+      provider_usage_raw: _isErrorPayload ? null : _normalized.providerUsageRaw,
+      status: _isErrorPayload ? 'error' : 'success',
+      provider_http_status: httpStatus,
+      error_type: _isErrorPayload ? _normalized.normalizedErrorCode : null,
+      failure_phase: _isErrorPayload ? 'outbound_call' : null,
+      request_started_at: _requestStartedAt.toISOString(),
+      duration_ms: _durationMs,
+      request_bytes: bodyBytes,
+      response_bytes: responseBytes,
+      outcome_id: _outcomeId,
+      units_generated: _resolveUnitsGeneratedAtInsert(INGESTION_APP_ID, _caller, _isErrorPayload ? 'error' : 'success'),
+      client_trace_id: _clientTraceId, agent_name: _agentName,
+      request_payload: _buildRequestPayload(body),
+      response_payload: _buildResponsePayload({
+        streamed: false, content_type: 'adapter_normalized', error: _isErrorPayload,
+        content: _isErrorPayload ? null : _normalized
+      })
     });
 
-    return res.status(200).json(data);
+    // v9.14: provider-neutral response envelope (Section 5.4) — the client's
+    // callAPI() now reads data.text, not data.content[0].text. On an error
+    // payload, keep the existing {error:{type,message}} shape the client's
+    // _pgtAnthropicErrorMessage() already knows how to interpret; _rawType
+    // preserves Anthropic's exact original error.type string so that
+    // function's existing per-type prefixes don't regress for Anthropic.
+    if (_isErrorPayload) {
+      return res.status(200).json({
+        error: {
+          type: _normalized._rawType || _normalized.normalizedErrorCode,
+          message: _normalized.safeErrorMessage
+        }
+      });
+    }
+    return res.status(200).json({ text: _normalized.text });
 
   } catch (err) {
-    const isTimeout = err.message && err.message.includes('upstream timeout');
+    const isTimeout = /upstream timeout/i.test(err.message || '');
+    const _errProvider = req.resolvedProvider || 'anthropic';
     console.error('[PROXY] Error:', err.message);
+
+    // ── AI usage-tracking insert — error/timeout path (v9.13) ──
+    // This branch fires when NO response was ever received from Anthropic at
+    // all (network failure, timeout, or a thrown parse error) — distinct from
+    // the success-path branch above, which handles a received-but-error-
+    // payload response. token/model/response fields are genuinely unavailable
+    // here, left null rather than defaulted to 0 (a real "we don't know," not
+    // a false "this cost nothing"). Only fires if the earlier per-call setup
+    // (timing, field extraction) completed — an error before that point
+    // (e.g. malformed body caught earlier in this handler) never reaches
+    // this catch block in the first place, so _requestStartedAt is safe to
+    // reference here.
+    if (typeof _requestStartedAt !== 'undefined') {
+      const _durationMs = Date.now() - _requestStartedAt.getTime();
+      await _insertAiUsageEvent({
+        client_call_id: typeof _clientCallId !== 'undefined' ? _clientCallId : null,
+        provider: _errProvider,
+        company_id: req.companyId || null,
+        product_id: typeof _productId !== 'undefined' ? _productId : null,
+        session_id: typeof _sessionId !== 'undefined' ? _sessionId : null,
+        session_type: typeof _sessionType !== 'undefined' ? _sessionType : null,
+        user_id: req.user ? req.user.id : null,
+        user_role_at_call: typeof _userRoleAtCall !== 'undefined' ? _userRoleAtCall : null,
+        caller: typeof _caller !== 'undefined' ? _caller : 'unknown',
+        prompt_version: typeof _promptVersion !== 'undefined' ? _promptVersion : null,
+        requested_model: (body && body.model) || null,
+        response_model: null,
+        settings_mode: typeof _settingsMode !== 'undefined' ? _settingsMode : null,
+        settings_model: typeof _settingsModel !== 'undefined' ? _settingsModel : null,
+        selection_rule: typeof _selectionRule !== 'undefined' ? _selectionRule : null,
+        input_tokens: null,
+        output_tokens: null,
+        cache_creation_5m_tokens: null,
+        cache_creation_1h_tokens: null,
+        cache_read_tokens: null,
+        provider_usage_raw: null,
+        status: isTimeout ? 'timeout' : 'error',
+        provider_http_status: null,
+        error_type: isTimeout ? 'timeout_error' : 'proxy_error',
+        failure_phase: 'outbound_call',
+        request_started_at: _requestStartedAt.toISOString(),
+        duration_ms: _durationMs,
+        request_bytes: typeof bodyBytes !== 'undefined' ? bodyBytes : null,
+        response_bytes: null,
+        outcome_id: typeof _outcomeId !== 'undefined' ? _outcomeId : null,
+        units_generated: typeof _caller !== 'undefined' ? _resolveUnitsGeneratedAtInsert(INGESTION_APP_ID, _caller, isTimeout ? 'timeout' : 'error') : null,
+        client_trace_id: typeof _clientTraceId !== 'undefined' ? _clientTraceId : null,
+        agent_name: typeof _agentName !== 'undefined' ? _agentName : null,
+        // No response was ever received here, but the request itself was
+        // already fully constructed before the network failure/timeout —
+        // request_payload is offered the same as every other call site,
+        // regardless of outcome. `body` is safe to reference directly here
+        // (hoisted above the try, unlike before this fix) rather than
+        // needing the typeof guard the other maybe-unset vars above use.
+        request_payload: _buildRequestPayload(body),
+        response_payload: _buildResponsePayload({
+          streamed: !!(body && body.stream),
+          content_type: (body && body.stream) ? 'accumulated_text' : 'adapter_normalized',
+          error: true, content: null
+        })
+      });
+    }
+
     if (!res.headersSent) {
       return res.status(isTimeout ? 504 : 502).json({
         error: {
           type: isTimeout ? 'timeout_error' : 'proxy_error',
           message: isTimeout
             ? 'AI request timed out. The model took too long to respond — please try again.'
-            : 'Proxy could not reach Anthropic. Check your network or try again. Detail: ' + err.message
+            : 'Proxy could not reach ' + _errProvider + '. Check your network or try again. Detail: ' + err.message
         }
       });
     }
@@ -518,6 +1913,215 @@ app.post('/api/check-company-name', async (req, res) => {
   }
 });
 
+// ── Outcome-Based Cost — units-generated report-back (AI Cost Control Tower v2)
+// Corrected architecture (Phase 1 finding, Section 2.3): the proxy never
+// parses a caller's domain JSON, so units_generated can't be computed at
+// insert time. Each Yield-type caller calls this immediately after it
+// successfully parses its own response, using client_call_id (already
+// generated client-side, already sent on the original /api/anthropic
+// request, already stored on that usage-event row) as the join key.
+// Idempotent by construction — WHERE units_generated IS NULL means a
+// retried or duplicated call is a no-op, not a corruption risk.
+// Request body is THREE fields, not two — company_id is required by the
+// requireActiveCompanyMember middleware in this route's chain (below) same
+// as every other /api/... route behind it, even though it's read there and
+// never mentioned again in this handler's own code. Phase 6 (wiring this
+// into the 13 Yield-caller success handlers) must send it: {client_call_id,
+// units_generated, company_id} — omitting it gets rejected by the
+// middleware with "company_id is required" before reaching this handler.
+app.post('/api/usage-events/units-generated', async (req, res) => {
+  try {
+    if (!supabaseAdmin) {
+      return res.status(200).json({ error: { type: 'proxy_error', message: 'Server not configured for this check.' } });
+    }
+    const clientCallId = req.body && req.body.client_call_id;
+    const unitsGenerated = req.body ? req.body.units_generated : undefined;
+    if (!clientCallId || typeof unitsGenerated !== 'number' || unitsGenerated < 0) {
+      return res.status(200).json({ error: { type: 'invalid_request', message: 'client_call_id (string), units_generated (integer >= 0), and company_id (checked by middleware before this point) are required.' } });
+    }
+    const { data, error } = await supabaseAdmin
+      .from('mt_ai_usage_events')
+      .update({ units_generated: Math.floor(unitsGenerated) })
+      .eq('client_call_id', clientCallId)
+      .eq('company_id', req.companyId)
+      .is('units_generated', null)
+      .select('client_call_id');
+    if (error) {
+      console.warn('[OUTCOME] units-generated update failed:', error.message);
+      return res.status(200).json({ error: { type: 'proxy_error', message: 'Could not record units_generated.' } });
+    }
+    // No matching row is not an error — it's a legitimate no-op (already
+    // set by a prior call, or the client_call_id doesn't belong to this
+    // company). Same-shape response either way; the caller doesn't need to
+    // distinguish "updated" from "already set."
+    return res.status(200).json({ ok: true, updated: !!(data && data.length > 0) });
+  } catch (err) {
+    console.error('[OUTCOME] units-generated exception:', err.message);
+    return res.status(200).json({ error: { type: 'proxy_error', message: 'Could not record units_generated.' } });
+  }
+});
+
+// Returns only the yield_anchor subset (caller name -> outcomeType) — the
+// frontend groups Yield rows by this lookup, and never needs the
+// session_sum_anchor / attachable_support entries at all (it groups those
+// rows by outcome_id instead, already present on mt_ai_cost_events_list()'s
+// rows). Computed fresh from the live constant on every call rather than
+// cached at startup — this is a tiny, rarely-called, in-memory object
+// filter, not worth adding cache-invalidation complexity for.
+app.get('/api/outcome-caller-modes', (req, res) => {
+  const appId = (req.query && req.query.app_id) || INGESTION_APP_ID;
+  const modesForApp = CALLER_ATTRIBUTION_MODE[appId] || {};
+  const yieldModes = {};
+  Object.keys(modesForApp).forEach(function(caller) {
+    const rule = modesForApp[caller];
+    if (rule.mode === 'yield_anchor') {
+      yieldModes[caller] = rule.outcomeType;
+    }
+  });
+  return res.status(200).json({ callerModes: yieldModes });
+});
+
+// ── Embeddings — Requirement Agent persistent-document RAG (v14) ─────────────
+// RA-Persistent-Doc-RAG-Spec-v14, D4/D6. Two routes: POST /api/embed (batch-
+// embeds chunk texts) and GET /api/embed-info (reports the current schema
+// version for the client's compatibility badge). Both registered before the
+// 404 catch-all below, under this file's existing CORS allow-list (not just
+// its auth middleware — the diagnostic route used during OI-6's smoke test
+// skipped CORS registration specifically and was rejected from real app
+// traffic for exactly that reason), same JWT auth (requireAuthStrict) as
+// every other authenticated route, and this file's own rate-limit pattern.
+
+app.options('/api/embed', cors(corsOptions));
+app.options('/api/embed-info', cors(corsOptions));
+
+const embedLimiter = rateLimit({
+  windowMs: RATE_LIMIT_WINDOW_MIN * 60 * 1000,
+  max: RATE_LIMIT_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    res.status(200).json({
+      error: {
+        type: 'rate_limit_error',
+        message: `Too many requests — limit is ${RATE_LIMIT_MAX} per ${RATE_LIMIT_WINDOW_MIN === 1 ? 'minute' : RATE_LIMIT_WINDOW_MIN + ' minutes'}. Please wait and try again.`
+      }
+    });
+  }
+});
+app.use('/api/embed', embedLimiter);
+app.use('/api/embed-info', embedLimiter);
+app.use('/api/embed', requireAuthStrict);
+app.use('/api/embed-info', requireAuthStrict);
+// Scoped to /api/embed only — /api/embed-info has no body. 2mb comfortably
+// covers D4's own ~200,000-character aggregate cap (re-checked explicitly
+// inside the handler below — this Express-level limit is just the outer
+// safety net, not the real enforcement point).
+app.use('/api/embed', express.json({ limit: '2mb' }));
+
+// D6 — deliberately a hardcoded, maintained-by-hand constant, never derived
+// from Azure deployment configuration or an env var (an earlier draft of
+// this spec tried deriving it and found that unsafe — a deployment-side
+// change wouldn't reliably bump it, silently mixing embeddings from two
+// incompatible schema generations in the same table). Bump this string
+// value by hand if the embedding model/deployment ever materially changes.
+const EMBEDDING_SCHEMA_VERSION = 'azure-text-embedding-3-small-v1';
+const EMBEDDING_DIMENSIONS = 1536;
+
+// D4 per-request/aggregate caps — checked here, before ever calling Azure,
+// not relied on Azure to reject (Azure's own limits — 2048 inputs/request,
+// 8192 tokens/input, 300,000 tokens/request aggregate — are comfortably
+// wider than these, so these are this app's own, tighter, deliberate caps).
+const EMBED_MAX_TEXTS = 200;
+const EMBED_MAX_CHARS_PER_TEXT = 4000;
+const EMBED_MAX_AGGREGATE_CHARS = 200000;
+
+// Calls Azure OpenAI's current (2026) v1 embeddings endpoint — confirmed
+// against Microsoft's live REST reference during this build, not assumed
+// from an older code sample: POST {endpoint}/openai/v1/embeddings, api-key
+// header auth, the deployment name passed as the body's `model` field (not
+// a URL path segment — that's the OLDER, now-superseded deployment-scoped
+// pattern). Explicit timeout via AbortController (D8) — embeddings are
+// normally fast, but a batch of up to 200 texts gets a generous margin.
+async function _embedAzure(texts) {
+  if (!AZURE_OPENAI_ENDPOINT || !AZURE_OPENAI_KEY || !AZURE_OPENAI_EMBED_DEPLOYMENT) {
+    throw new Error('Azure OpenAI embedding is not configured on this proxy.');
+  }
+  const controller = new AbortController();
+  const timeoutMs = 30000;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const r = await fetch(AZURE_OPENAI_ENDPOINT + '/openai/v1/embeddings?api-version=v1', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'api-key': AZURE_OPENAI_KEY },
+      body: JSON.stringify({ model: AZURE_OPENAI_EMBED_DEPLOYMENT, input: texts }),
+      signal: controller.signal
+    });
+    const data = await r.json().catch(() => null);
+    if (!r.ok || !data) {
+      const msg = (data && data.error && data.error.message) || ('Azure OpenAI embedding request failed (HTTP ' + r.status + ').');
+      throw new Error(msg);
+    }
+    if (!Array.isArray(data.data) || data.data.length !== texts.length) {
+      throw new Error('Azure OpenAI returned an unexpected number of embeddings.');
+    }
+    // Sort by Azure's own `index` field rather than trusting array order —
+    // the API does not explicitly document ordering as guaranteed, and this
+    // is the one place a silent misalignment would corrupt every chunk's
+    // embedding without any visible symptom.
+    const ordered = data.data.slice().sort((a, b) => a.index - b.index);
+    const embeddings = ordered.map(item => item.embedding);
+    // D6 — explicit dimension validation: reject before this ever reaches
+    // the database, rather than letting a malformed/mismatched response
+    // surface as a confusing pgvector cast error three layers away.
+    for (let i = 0; i < embeddings.length; i++) {
+      if (!Array.isArray(embeddings[i]) || embeddings[i].length !== EMBEDDING_DIMENSIONS) {
+        throw new Error('Azure OpenAI returned an embedding with an unexpected dimension count.');
+      }
+    }
+    return embeddings;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+app.post('/api/embed', async (req, res) => {
+  try {
+    const texts = req.body && req.body.texts;
+    if (!Array.isArray(texts) || texts.length === 0 || texts.length > EMBED_MAX_TEXTS) {
+      return res.status(200).json({ error: { type: 'invalid_request', message: 'texts must be a non-empty array of at most ' + EMBED_MAX_TEXTS + ' strings.' } });
+    }
+    let aggregateChars = 0;
+    for (let i = 0; i < texts.length; i++) {
+      if (typeof texts[i] !== 'string' || !texts[i].trim()) {
+        return res.status(200).json({ error: { type: 'invalid_request', message: 'Every entry in texts must be a non-empty string.' } });
+      }
+      if (texts[i].length > EMBED_MAX_CHARS_PER_TEXT) {
+        return res.status(200).json({ error: { type: 'invalid_request', message: 'Each text must be at most ' + EMBED_MAX_CHARS_PER_TEXT + ' characters.' } });
+      }
+      aggregateChars += texts[i].length;
+    }
+    if (aggregateChars > EMBED_MAX_AGGREGATE_CHARS) {
+      return res.status(200).json({ error: { type: 'invalid_request', message: 'Total text length across this request is too large.' } });
+    }
+
+    const embeddings = await _embedAzure(texts);
+    return res.status(200).json({ embeddings, embedding_schema_version: EMBEDDING_SCHEMA_VERSION });
+  } catch (err) {
+    const isTimeout = err && err.name === 'AbortError';
+    console.error('[EMBED] error:', err && err.message);
+    return res.status(200).json({
+      error: {
+        type: isTimeout ? 'timeout_error' : 'proxy_error',
+        message: isTimeout ? 'Embedding request timed out. Please try again.' : 'Could not generate embeddings. Please try again.'
+      }
+    });
+  }
+});
+
+app.get('/api/embed-info', (req, res) => {
+  return res.status(200).json({ embedding_schema_version: EMBEDDING_SCHEMA_VERSION });
+});
+
 // ── Team Management (Phase 4) ─────────────────────────────────────────────────
 // All seven routes below run behind requireAuthStrict + requireCompanyAdmin
 // (registered above). req.companyId is the verified, trusted company id —
@@ -557,7 +2161,7 @@ app.post('/api/team/list', async (req, res) => {
   try {
     const { data: rows, error } = await supabaseAdmin
       .from('mt_users_companies')
-      .select('user_id, role, is_active, joined_at')
+      .select('user_id, role, is_active, joined_at, access')
       .eq('company_id', req.companyId);
     if (error) {
       console.error('[TEAM] list query failed:', error.message);
@@ -581,6 +2185,7 @@ app.post('/api/team/list', async (req, res) => {
           namePlaceholder,
           email: u.email || '',
           role: row.role,
+          access: row.access,
           status,
           is_self: row.user_id === req.user.id
         };
@@ -597,6 +2202,63 @@ app.post('/api/team/list', async (req, res) => {
   }
 });
 
+// ── Cost Tower user-name resolution ── deliberately NOT under /api/team's
+// prefix, so it doesn't inherit requireCompanyAdmin. Cost Tower opened to
+// every active member regardless of role (this same multi-app platform
+// extension), but /api/team/list (used by actLoadTeamNames() before this
+// fix) stayed admin-gated -- a non-admin viewer got no names at all,
+// degrading to raw user ids. This route returns only {user_id, name}, never
+// email/role/access/status, gated on active membership alone (any role,
+// including control_tower -- Cost Tower is exactly who needs this).
+app.options('/api/cost-tower/team-names', cors(corsOptions));
+app.use('/api/cost-tower/team-names', teamLimiter);
+app.use('/api/cost-tower/team-names', express.json({ limit: '10kb' }));
+app.use('/api/cost-tower/team-names', requireAuthStrict);
+app.post('/api/cost-tower/team-names', async (req, res) => {
+  try {
+    const companyId = req.body && req.body.company_id;
+    if (!companyId) {
+      return res.status(200).json({ error: { type: 'invalid_request', message: 'company_id is required.' } });
+    }
+    const { data: isMember, error: memberErr } = await supabaseAdmin.rpc('is_active_company_member', {
+      p_user_id: req.user.id, p_company_id: companyId
+    });
+    if (memberErr) {
+      console.error('[COST TOWER] team-names: membership check failed:', memberErr.message);
+      return res.status(200).json({ error: { type: 'proxy_error', message: 'Could not load team names.' } });
+    }
+    if (!isMember) {
+      return res.status(200).json({ error: { type: 'forbidden_error', message: "You don't have active access to this company." } });
+    }
+
+    const { data: rows, error } = await supabaseAdmin
+      .from('mt_users_companies')
+      .select('user_id')
+      .eq('company_id', companyId);
+    if (error) {
+      console.error('[COST TOWER] team-names query failed:', error.message);
+      return res.status(200).json({ error: { type: 'proxy_error', message: 'Could not load team names.' } });
+    }
+
+    const names = await Promise.all((rows || []).map(async function(row) {
+      try {
+        const { data: userData, error: userErr } = await supabaseAdmin.auth.admin.getUserById(row.user_id);
+        if (userErr || !userData || !userData.user) return null;
+        const u = userData.user;
+        const displayName = (u.user_metadata && u.user_metadata.display_name) || (u.email || '').split('@')[0];
+        return { user_id: row.user_id, name: displayName };
+      } catch (e) {
+        return null;
+      }
+    }));
+
+    return res.status(200).json({ names: names.filter(Boolean) });
+  } catch (err) {
+    console.error('[COST TOWER] team-names exception:', err.message);
+    return res.status(200).json({ error: { type: 'proxy_error', message: 'Could not load team names.' } });
+  }
+});
+
 // ── Invite ── Path A (new email) / Path B (already registered elsewhere)
 app.post('/api/team/invite', async (req, res) => {
   try {
@@ -609,6 +2271,11 @@ app.post('/api/team/invite', async (req, res) => {
     // an EXISTING member is treated as a hard error, not a silent default.
     const _validInviteRoles = ['admin', 'member', 'readonly'];
     const role = (req.body && _validInviteRoles.includes(req.body.role)) ? req.body.role : 'member';
+    // Multi-app platform extension — mirrors role's own omitted/invalid
+    // default-silently behavior above, not set-access's hard-fail (see that
+    // route's comment for why the two differ intentionally).
+    const _validInviteAccess = ['full_suite', 'control_tower'];
+    const access = (req.body && _validInviteAccess.includes(req.body.access)) ? req.body.access : 'full_suite';
 
     if (!email) {
       return res.status(200).json({ error: { type: 'invalid_request', message: 'Email is required.' } });
@@ -666,7 +2333,7 @@ app.post('/api/team/invite', async (req, res) => {
 
     const { error: insertErr } = await supabaseAdmin
       .from('mt_users_companies')
-      .insert({ user_id: targetUserId, company_id: req.companyId, role, is_active: true });
+      .insert({ user_id: targetUserId, company_id: req.companyId, role, access, is_active: true });
 
     if (insertErr) {
       if (insertErr.code === '23505') {
@@ -734,6 +2401,51 @@ app.post('/api/team/set-role', async (req, res) => {
   } catch (err) {
     console.error('[TEAM] set-role exception:', err.message);
     return res.status(200).json({ error: { type: 'proxy_error', message: 'Could not change role. Please try again.' } });
+  }
+});
+
+// ── Set access ── Full Suite / Control Tower Only — mirrors set-role's exact
+// validation shape (hard fail on an invalid value, do not silently coerce —
+// same reasoning as set-role's own comment: a garbled request naming an
+// existing member is a bug or an attack, not a normal default case).
+// team_set_access_safe deliberately carries no "last full-suite admin" guard
+// (§6a.4 confirmed Option A: Team Management stays reachable regardless of
+// access, so there is no invariant to protect) — self-change blocking still
+// belongs here in the route, not the RPC, mirroring set-role's real body.
+app.post('/api/team/set-access', async (req, res) => {
+  try {
+    const targetUserId = req.body && req.body.target_user_id;
+    const _validAccess = ['full_suite', 'control_tower'];
+    const newAccess = req.body && req.body.new_access;
+    if (typeof newAccess !== 'string' || !_validAccess.includes(newAccess)) {
+      return res.status(200).json({ error: { type: 'invalid_request', message: 'Invalid access level specified.' } });
+    }
+    if (!targetUserId) {
+      return res.status(200).json({ error: { type: 'invalid_request', message: 'target_user_id is required.' } });
+    }
+    if (targetUserId === req.user.id) {
+      return res.status(200).json({ error: { type: 'invalid_request', message: "You can't change your own access here." } });
+    }
+    // No membership pre-check here, unlike set-role: team_set_access_safe
+    // carries no second guard (no "last full-suite admin" invariant, per
+    // §6a.4 Option A), so its only false-path is "not a member" — the RPC's
+    // own result already tells us that with no ambiguity to disambiguate,
+    // and no extra round-trip is needed to find out first.
+    const { data: ok, error } = await supabaseAdmin.rpc('team_set_access_safe', {
+      p_company_id: req.companyId, p_target_user: targetUserId, p_new_access: newAccess
+    });
+    if (error) {
+      console.error('[TEAM] set-access RPC failed:', error.message);
+      return res.status(200).json({ error: { type: 'proxy_error', message: 'Could not change access. Please try again.' } });
+    }
+    if (!ok) {
+      return res.status(200).json({ error: { type: 'invalid_request', message: 'This person is no longer a member of this company.' } });
+    }
+    console.log('[TEAM] set-access:', req.user.email, '->', targetUserId, 'to', newAccess, 'company', req.companyId);
+    return res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error('[TEAM] set-access exception:', err.message);
+    return res.status(200).json({ error: { type: 'proxy_error', message: 'Could not change access. Please try again.' } });
   }
 });
 
@@ -869,6 +2581,23 @@ app.post('/api/team/delete', async (req, res) => {
     await supabaseAdmin
       .from('mt_sessions')
       .update({ active_user_id: null, active_at: null })
+      .eq('user_id', targetUserId)
+      .eq('company_id', req.companyId)
+      .eq('is_shared', true);
+
+    // v9.12 — same cleanup for the separate occupancy lock (Session
+    // Occupancy Lock / "Single User Editing" mode). Flagged during
+    // adversarial review: without this, a removed member's still-
+    // authenticated browser could keep refreshing occupant_at via
+    // heartbeat_session_occupancy indefinitely, since that RPC only checks
+    // occupant_user_id = current_app_user() and lease freshness — it has no
+    // independent membership check of its own, by design (matching
+    // acquire_generation_lock's own heartbeat, which relies on this exact
+    // same admin-cleanup pattern rather than re-checking membership on
+    // every 22-second tick).
+    await supabaseAdmin
+      .from('mt_sessions')
+      .update({ occupant_user_id: null, occupant_at: null, occupant_user_name: null })
       .eq('user_id', targetUserId)
       .eq('company_id', req.companyId)
       .eq('is_shared', true);
@@ -1010,6 +2739,102 @@ app.post('/api/team/revoke', async (req, res) => {
   }
 });
 
+// ── AI Cost Control Tower: OpenAPI Ingestion Layer (/v1) ─────────────────────
+// Consumer-tier ingestion API for other internal HCLTech apps (Section 6 of
+// ai-cost-tower-openapi-ingestion-spec.md). Standard HTTP status codes
+// (400/401/404/500), NOT this file's own always-200-error-in-body
+// convention — that convention is explicitly scoped to Product Studio's own
+// frontend-to-proxy calls only (Section 2), untouched everywhere above.
+// The limiter/404/error-handler below all return real status codes (429,
+// 404, 400) rather than reusing the 200-always shape every other limiter
+// and catch-all in this file uses, to stay consistent with that contract.
+//
+// Code-review fix: this ingestion surface previously had no rate limiter at
+// all, unlike every other route family in this file — same shared
+// RATE_LIMIT_MAX/RATE_LIMIT_WINDOW_MIN constants, mounted ahead of auth so
+// an over-limit caller is rejected before a credential lookup is spent on it.
+const v1IngestionLimiter = rateLimit({
+  windowMs: RATE_LIMIT_WINDOW_MIN * 60 * 1000,
+  max: RATE_LIMIT_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    res.status(429).json({
+      error: {
+        type: 'rate_limit_error',
+        message: `Too many requests — limit is ${RATE_LIMIT_MAX} per ${RATE_LIMIT_WINDOW_MIN === 1 ? 'minute' : RATE_LIMIT_WINDOW_MIN + ' minutes'}. Please wait and try again.`
+      }
+    });
+  }
+});
+app.use('/v1', v1IngestionLimiter);
+
+// apiKeyAuth is mounted once, ahead of all four routers below, not paired
+// with each individually — Express falls through an unmatched router to the
+// next app.use() registration at the same path, so interleaving auth into
+// each mount would re-run it up to four times per request (finding #21).
+// Runs before express.json() so an invalid credential is rejected before any
+// effort is spent parsing a potentially large, untrusted batch body.
+app.use('/v1', apiKeyAuth(supabaseAdmin));
+app.use('/v1', express.json({ limit: '2mb' }));
+// Code-review fix: express.json() throws (via next(err)) on malformed JSON
+// or a payload over the 2mb limit; with no error-handling middleware here,
+// that fell through to Express's own default HTML error response instead
+// of this API's documented {error:{type,message}} envelope. A 4-argument
+// handler placed immediately after express.json() catches exactly that.
+app.use('/v1', function (err, req, res, next) {
+  if (err) {
+    return res.status(400).json({ error: { type: 'invalid_request', message: 'Malformed JSON body or payload too large.' } });
+  }
+  next();
+});
+app.use('/v1', usageEventsRouter(supabaseAdmin));
+app.use('/v1', outcomesRouter(supabaseAdmin));
+app.use('/v1', outcomeTypesRouter(supabaseAdmin));
+app.use('/v1', companyAppsRouter(supabaseAdmin));
+app.use('/v1', tracesRouter(supabaseAdmin));
+app.use('/v1', toolSpansRouter(supabaseAdmin));
+app.use('/v1', tracePayloadsRouter(supabaseAdmin));
+// Code-review fix: an unmatched /v1 path/method previously fell through to
+// the file's global 404 catch-all below, which returns HTTP 200 — directly
+// contradicting this API's own documented status-code contract. Scoped
+// here so nothing above this file's original behavior changes for any
+// other route.
+app.use('/v1', function (req, res) {
+  res.status(404).json({ error: { type: 'not_found', message: 'Route not found: ' + req.method + ' ' + req.path } });
+});
+
+// ── AI Cost Control Tower: OpenAPI Ingestion Layer docs (Section 8) ──────────
+// Unauthenticated static Redoc page — the API key is the auth boundary for
+// the actual data, not this reference page.
+//
+// /docs (no trailing slash, what ai-cost-tower.html's actOpenApiDocs()
+// actually opens, Section 7.2) redirects to /docs/ rather than serving
+// docs.html directly at the bare path. This matters for more than taste:
+// docs.html's own <redoc spec-url="openapi.yaml"> is a RELATIVE reference
+// (matching the spec's literal example), and a relative URL resolves
+// against its page's own address by dropping that address's last path
+// segment. Served at bare /docs, "openapi.yaml" would resolve to
+// /openapi.yaml (wrong — 404). Served at /docs/, it correctly resolves to
+// /docs/openapi.yaml. An earlier version of this file used an absolute
+// spec-url instead to sidestep that, but that only worked through this
+// one specific route — opening docs.html directly from disk (or serving
+// proxy/openapi/ from any other root) 404'd on the spec fetch and Redoc
+// rendered nothing, a real blank-page bug caught after the fact. The
+// redirect + relative-path combination is correct in both places at once.
+// Deliberately NOT app.get('/docs', ...) — Express's default non-strict
+// routing treats '/docs' and '/docs/' as the same route, which turned an
+// earlier version of this redirect into an infinite loop (it matched its
+// own redirect target). Mounting with app.use('/docs', ...) instead strips
+// the '/docs' prefix before this middleware sees req.path, so the two
+// cases are genuinely distinguishable: req.path is '' for a request to the
+// bare /docs, and '/' for a request to /docs/.
+app.use('/docs', function (req, res, next) {
+  if (req.path === '') return res.redirect(301, req.originalUrl + '/');
+  next();
+});
+app.use('/docs', express.static(path.join(__dirname, 'openapi'), { index: 'docs.html' }));
+
 // ── 404 catch-all ─────────────────────────────────────────────────────────────
 app.use((req, res) => {
   res.status(200).json({
@@ -1026,6 +2851,6 @@ app.listen(PORT, () => {
   console.log('  ✓ Product Diagnostics Proxy running');
   console.log('  → Endpoint: http://localhost:' + PORT + '/api/anthropic');
   console.log('  → Auth:     JWT verification ' + (SUPABASE_URL ? 'ENABLED (JWKS / ECC P-256)' : 'DISABLED — set SUPABASE_URL'));
-  console.log('  → API key:  ' + (ORG_API_KEY ? 'Shared org key (env var)' : 'BYOK only'));
+  console.log('  → API key:  anthropic=' + (ORG_API_KEY_BY_PROVIDER.anthropic ? 'org key set' : 'BYOK only') + ', openai=' + (ORG_API_KEY_BY_PROVIDER.openai ? 'org key set' : 'BYOK only') + ', gemini=' + (ORG_API_KEY_BY_PROVIDER.gemini ? 'org key set' : 'BYOK only'));
   console.log('');
 });

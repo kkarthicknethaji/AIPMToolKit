@@ -21,6 +21,21 @@
 const jwt = require('jsonwebtoken');
 const jwksRsa = require('jwks-rsa');
 const { createClient } = require('@supabase/supabase-js');
+// v9.14: shares the same adapter module server.js uses, rather than hand-
+// duplicating request-building/response-parsing logic. Required from
+// './providerAdapters', NOT '../../proxy/providerAdapters' — a live
+// deploy confirmed Netlify's Function bundler does not trace a relative
+// require crossing the netlify/functions/ directory boundary ("Cannot
+// find module '../../proxy/providerAdapters'"), so netlify.toml's build
+// command copies the canonical proxy/providerAdapters.js in here at
+// build time (gitignored copy, not a hand-maintained duplicate) before
+// this require ever resolves. This function itself stays Anthropic-only
+// and unrelated to appSettings.provider — it's the separate, always-
+// Anthropic path for Home's AI Recommendations (see scripts/api.js's
+// comment on why that call bypasses callAPI()), not the multi-provider
+// /api/anthropic path server.js now handles.
+const { getAdapter } = require('./providerAdapters');
+const anthropicAdapter = getAdapter('anthropic');
 
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').trim();
 const SUPABASE_SERVICE_ROLE_KEY = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
@@ -194,19 +209,22 @@ exports.handler = async function(event) {
   const timeout = setTimeout(() => controller.abort(), 48000);
 
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model:      body.model,
-        max_tokens: body.max_tokens,
-        system:     body.system,
-        messages:   body.messages
-      }),
+    // v9.14: request built via the shared anthropicAdapter rather than a
+    // second hand-written copy of the Messages API request shape — the
+    // response is still returned RAW (Anthropic's own {content:[{text}]}
+    // shape) below, unchanged from before, since home.js's AI Recommendations
+    // caller (the only consumer of this function) expects that exact shape
+    // and is out of scope for this feature to touch.
+    const upstreamReq = anthropicAdapter.buildUpstreamRequest({
+      model:      body.model,
+      max_tokens: body.max_tokens,
+      system:     body.system,
+      messages:   body.messages
+    }, apiKey);
+    const response = await fetch(upstreamReq.url, {
+      method: upstreamReq.method,
+      headers: upstreamReq.headers,
+      body: JSON.stringify(upstreamReq.body),
       signal: controller.signal
     });
 

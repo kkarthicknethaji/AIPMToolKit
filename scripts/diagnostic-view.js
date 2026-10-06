@@ -122,7 +122,7 @@ function dvShowMergeNotice(retained){
   const toast=document.createElement('div');
   toast.id='dv-merge-toast';
   toast.className='dv-merge-toast';
-  toast.textContent='KPI tree updated. Evidence retained for '+retained+' matching metric'+(retained!==1?'s':'')+'.'
+  toast.textContent='Discovery Map updated. Evidence retained for '+retained+' matching metric'+(retained!==1?'s':'')+'.'
   document.body.appendChild(toast);
   setTimeout(()=>{toast.classList.add('on');},50);
   setTimeout(()=>{toast.classList.remove('on');setTimeout(()=>toast.remove(),400);},4000);
@@ -146,7 +146,7 @@ function dvFindMetricById(tree,id){
 
 // ── Create diagnostic view (called from CTA) ──
 function dvCreate(){
-  if(!gData){showToast('Generate a KPI tree first.','info');return;}
+  if(!gData){showToast('Generate a Discovery Map first.','info');return;}
   if(!featDiag){
     showToast('Product Leak Diagnostic is disabled. Enable it in Settings to use this feature.','info');
     return;
@@ -182,7 +182,7 @@ function dvRenderView(){
 }
 
 function dvRenderNoKpiState(){
-  return`<div class="dv-empty"><div class="dv-empty-icon"><i class="ti ti-chart-tree-map" aria-hidden="true"></i></div><div class="dv-empty-title">Generate a KPI tree first</div><div class="dv-empty-desc">The diagnostic view uses your generated north star metric and lifecycle KPI tree as its starting point.</div><button class="dv-empty-btn" onclick="switchTab('mm')"><i class="ti ti-arrow-left" style="font-size:11px;" aria-hidden="true"></i> Go to KPI Tree</button></div>`;
+  return`<div class="dv-empty"><div class="dv-empty-icon"><i class="ti ti-chart-tree-map" aria-hidden="true"></i></div><div class="dv-empty-title">Generate a Discovery Map first</div><div class="dv-empty-desc">The diagnostic view uses your generated north star metric and lifecycle Discovery Map as its starting point.</div><button class="dv-empty-btn" onclick="switchTab('mm')"><i class="ti ti-arrow-left" style="font-size:11px;" aria-hidden="true"></i> Go to Discovery Map</button></div>`;
 }
 
 function dvRenderLeftPanel(session){

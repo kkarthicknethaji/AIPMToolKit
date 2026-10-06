@@ -160,6 +160,15 @@ function laRenameRun(runId){
 }
 
 
+// Shared DOM read-back for the left panel's collapsed state - #la-left
+// stays in the DOM (just hidden) between tab switches, see
+// laToggleLeftPanel()'s matching write. Used both here and by
+// laRenderLeftPanel() below, instead of each inlining the same read.
+function laIsLeftPanelCollapsed(){
+  const lp=document.getElementById('la-left');
+  return !!(lp&&lp.classList.contains('collapsed'));
+}
+
 function laRenderAnalysis(){
   const container=document.getElementById('la-tab');
   if(!container)return;
@@ -169,7 +178,9 @@ function laRenderAnalysis(){
   }
 
   const session=diagnosticSessions&&diagnosticSessions.find(function(s){return s.id===activeDiagnosticId;});
-  const laLeftHtml=laRenderLeftPanelInner(session,false);
+  // Restore panel collapsed state from the existing #la-left.
+  const laLeftCollapsed=laIsLeftPanelCollapsed();
+  const laLeftHtml=laRenderLeftPanelInner(session,laLeftCollapsed);
   const activeRun=laGetActiveRun();
   const mainTitle=activeRun?activeRun.runLabel+' — diagnostic detail':'Experiment Canvas';
   const mainSub=activeRun
@@ -178,7 +189,7 @@ function laRenderAnalysis(){
 
   container.innerHTML=`
     <div class="la-layout">
-      <div class="la-left" id="la-left">${laLeftHtml}</div>
+      <div class="la-left${laLeftCollapsed?' collapsed':''}" id="la-left">${laLeftHtml}</div>
       <div class="la-main" id="la-main">
         <div class="la-main-content">
           <div class="la-scroll" id="la-scroll">
@@ -335,7 +346,7 @@ function laRenderLeftPanelInner(session,isCollapsed){
 
 
 function laRenderLeftPanel(session,isCollapsed){
-  if(isCollapsed===undefined){const lp=document.getElementById('la-left');isCollapsed=lp&&lp.classList.contains('collapsed');}
+  if(isCollapsed===undefined){isCollapsed=laIsLeftPanelCollapsed();}
   return laRenderLeftPanelInner(session,isCollapsed);
 }
 
@@ -652,6 +663,13 @@ function laOpenDetailPanel(runId,idx){
   const selKey=runId+'|'+idx;
   const sel=leakSelectedIds.has(selKey);
   const sent=laIsSent(runId,idx);
+  // v9.11.01 (Fix 5) — previously hardcoded "Product leak diagnostic"
+  // unconditionally, misreporting origin for every outcome-pulse-sourced
+  // experiment (found during adversarial review, not in the original bug
+  // report). Legacy runs with no source field at all default to
+  // 'diagnostic', matching the same fallback convention used everywhere
+  // else run.source is read.
+  const originLabel=(run.source||'diagnostic')==='outcome-pulse'?'Outcome Pulse suggestion':'Product leak diagnostic';
   panel.innerHTML=`
     <div class="la-dp-head">
       <div>
@@ -670,7 +688,7 @@ function laOpenDetailPanel(runId,idx){
           <div class="la-map-row"><span>Feature name</span><span>${e(exp.experimentTitle||'')}</span></div>
           <div class="la-map-row"><span>Source metric</span><span>${e(exp.linkedMetricName||'')}</span></div>
           <div class="la-map-row"><span>Stage</span><span>${e(exp.lifecycleStage||'')} &middot; ${e(exp.priority||'')}</span></div>
-          <div class="la-map-row"><span>Origin</span><span class="la-origin-val">Product leak diagnostic</span></div>
+          <div class="la-map-row"><span>Origin</span><span class="la-origin-val">${e(originLabel)}</span></div>
         </div>
       </div>
     </div>
@@ -793,39 +811,154 @@ function laSendToStoryCanvas(){
     if(laIsSent(parsed.runId,parsed.idx))continue;
 
     var linkedMetric=exp.linkedMetricName||'Unknown Metric';
-    var capLabel='Diagnostic Experiments — '+linkedMetric;
-    var fid=scMakeFeatureId(linkedMetric,capLabel+':'+parsed.runId,exp.experimentTitle||'');
+    // v9.11.02 (Fix 7) — the synthetic "Diagnostic Experiments — {metric}"
+    // capability + isolated stage bucket below was built for real
+    // Diagnostic Analysis experiments, which genuinely have no originating
+    // feature (that flow starts from raw KPI-tree evidence, not from an
+    // existing feature — verified in _dvRunAnalysis(), which takes
+    // stagesWithEvidence/changedMetrics, never a feature reference). That
+    // mechanism is architecturally wrong for outcome-pulse-origin
+    // experiments, which always have a real, known originating feature
+    // (opOpenSuggestExperimentModal() cannot open without one) — reported
+    // live: an Acquisition-stage feature's generated experiment landed
+    // under a phantom stage bucket instead of its own real hierarchy, and
+    // that phantom bucket's unbounded-length AI-generated stage name (from
+    // the unconstrained exp.lifecycleStage fallback) also caused a
+    // horizontal-scroll layout regression on Feature Canvas.
+    var _isOutcomePulseOrigin=run.source==='outcome-pulse';
+    var capLabel,resolvedStage,fid;
+    // v9.11.03 (Fix 8) — even with cap/stage now correct (v9.11.02), the
+    // grouping key Feature Canvas actually uses is stage+METRIC
+    // (fcRenderCanvas(): k=f.stage+'||'+f.metric) — and linkedMetric here
+    // was still exp.linkedMetricName (the AI's/hypothesis's own metric
+    // label), never the real KPI-tree metric string. Any mismatch between
+    // those two strings put the new card in a second, duplicate stage
+    // section even though stage/capability were both correct. For
+    // outcome-pulse origin, override linkedMetric with the real KPI-tree
+    // string captured at generation time — used for BOTH the fid and the
+    // card's own metric field below, so grouping and hypothesis label are
+    // finally consistent with the original feature throughout.
+    if(_isOutcomePulseOrigin&&run.originFeatureMetric){
+      linkedMetric=run.originFeatureMetric;
+    }
+    if(_isOutcomePulseOrigin){
+      // Real hierarchy already exists and is known with certainty — use it
+      // directly. No stage resolution needed (nothing to resolve), no
+      // synthetic capability label, no capStore entry (nothing new needs
+      // to be created — the real capability is already tracked elsewhere).
+      capLabel=run.originFeatureCap||linkedMetric;
+      resolvedStage=run.originFeatureStage||'';
+      fid=scMakeFeatureId(linkedMetric,capLabel,exp.experimentTitle||'');
+    } else {
+      capLabel='Diagnostic Experiments — '+linkedMetric;
+      resolvedStage=_laResolveStageFromMetric(linkedMetric)||exp.lifecycleStage||'';
+      fid=scMakeFeatureId(linkedMetric,capLabel+':'+parsed.runId,exp.experimentTitle||'');
+    }
     _laSentFids.push(fid);
     if(!scCanvas.some(function(f){return f.id===fid;})){
       var sm=exp.successMetric||{};
       var successCtx=sm.metricName?(sm.metricName+(sm.currentValue?' ('+sm.currentValue+'→'+(sm.targetValue||'target')+')':'')):'';
-      var resolvedStage=_laResolveStageFromMetric(linkedMetric)||exp.lifecycleStage||'';
+      // v9.11.01 (Fix 4) — previously this card was created with no
+      // outcomeHypothesis at all, for either run source (real diagnostic
+      // or outcome-pulse), even though the source experiment already
+      // carries hypothesis/success-metric data. Reported: "the hypothesis
+      // is left empty while it has already been defined in the
+      // experiments." Mapped here from the same fields already present on
+      // the experiment object, reusing computeDirection() exactly like
+      // every other hypothesis-creation path in this app rather than
+      // inventing new null-handling — verified computeSuggestedSignal()
+      // doesn't consume direction at all (only baseline/target/actual) and
+      // every render site already degrades gracefully on a falsy
+      // direction, so there is no correctness reason to leave it
+      // uncomputed when baseline/target are both known.
+      // Empty-string guard before Number() conversion: Number('') is 0, a
+      // real, misleading numeric value — not the "not set" state an empty
+      // string from the AI's loose JSON schema actually represents. Same
+      // defensive check computeDirection() already applies internally to
+      // its own inputs; applied here too since hypBaseline/hypTarget are
+      // stored directly, not just passed through that one function.
+      var _expBaseline=(sm.currentValue===''||sm.currentValue==null)?null:(isFinite(Number(sm.currentValue))?Number(sm.currentValue):null);
+      var _expTarget=(sm.targetValue===''||sm.targetValue==null)?null:(isFinite(Number(sm.targetValue))?Number(sm.targetValue):null);
+      // v9.11.03 (Fix 8) — for outcome-pulse origin, inherit baseline/
+      // target from the original feature rather than relying solely on
+      // the experiment's own (often absent) successMetric numbers,
+      // per the agreed rule: baseline = original's logged actual if
+      // present, else its baseline; target = the experiment's own
+      // proposed target if present, else the original's target. Real-
+      // diagnostic origin is unaffected — no original feature exists for
+      // it to inherit from, so it keeps using the experiment's own
+      // successMetric values exactly as before.
+      var hypBaseline=_expBaseline;
+      var hypTarget=_expTarget;
+      if(_isOutcomePulseOrigin){
+        hypBaseline=(run.originHypothesisActual!=null)?run.originHypothesisActual:(run.originHypothesisBaseline!=null?run.originHypothesisBaseline:_expBaseline);
+        hypTarget=(_expTarget!=null)?_expTarget:(run.originHypothesisTarget!=null?run.originHypothesisTarget:null);
+      }
+      var mappedHypothesis={
+        primary:{
+          // v9.11.04 (Fix 11) — for outcome-pulse origin, the new
+          // sibling's hypothesis metric now inherits the ORIGINAL
+          // feature's own hypothesis metric label (run.originHypothesisMetric),
+          // not linkedMetric (the KPI-tree grouping field, correct for
+          // fid/stage/cap but NOT the same thing as the hypothesis's own,
+          // deliberately-more-granular metric label by original v9.10.00
+          // design). Verified: exp.successMetric.metricName was already
+          // correctly canonicalized to this same hypothesis-metric string
+          // by an earlier fix (Fix 3, at generation time), independent of
+          // this change — no other field needed correcting.
+          metric:_isOutcomePulseOrigin?(run.originHypothesisMetric||linkedMetric):(sm.metricName||linkedMetric),
+          unit:'custom',customLabel:'',
+          baseline:hypBaseline,target:hypTarget,
+          direction:computeDirection(hypBaseline,hypTarget),
+          directionSource:'computed',
+          rationale:(exp.hypothesis||exp.description||'').toString().trim().slice(0,400),
+          source:'ai',actual:null,signal:null,loggedAt:null
+        },
+        secondary:[]
+      };
       scCanvas.push({id:fid,metric:linkedMetric,stage:resolvedStage,
         cap:capLabel,name:exp.experimentTitle||'',
         why:exp.hypothesis||exp.description||'',stories:null,origin:'diagnostic',
+        outcomeHypothesis:mappedHypothesis,
         diagnosticContext:{runId:parsed.runId,experimentIndex:parsed.idx,
           leakingStage:run.leakingStage||'',bottleneckMetric:run.primaryBottleneckMetric||'',
           problemStatement:run.problemStatement||'',priority:exp.priority||'',
           successMetric:successCtx,instrumentationNeeded:exp.instrumentationNeeded||'',
           severity:run.severity||'',
-          evidenceStrength:run.evidenceStrength||''}});
+          evidenceStrength:run.evidenceStrength||'',
+          // v9.11.01 (Fix 6) — origin stays 'diagnostic' for both run
+          // sources (unchanged, to avoid a wider FC card-styling change
+          // this patch isn't scoped for); runSource distinguishes them for
+          // any downstream code that needs to, without overloading origin.
+          runSource:run.source||'diagnostic'}});
       added++;
 
-      var capStoreKey='diag||'+linkedMetric;
-      if(!capStore[capStoreKey]){
-        capStore[capStoreKey]={
-          metricName:linkedMetric,stageLabel:'Experiment Canvas',stageId:'diag',_diagCap:true,
-          capabilities:[{name:capLabel,why:(run.problemStatement||'Diagnostic experiments linked to '+linkedMetric),
-            subCaps:null,featStore:{top:[]}}]
-        };
-      }
-      var capEntry=capStore[capStoreKey];
-      if(!capEntry.capabilities[0].featStore)capEntry.capabilities[0].featStore={top:[]};
-      if(!capEntry.capabilities[0].featStore.top)capEntry.capabilities[0].featStore.top=[];
-      var featTop=capEntry.capabilities[0].featStore.top;
-      if(!featTop.some(function(x){return x.name===(exp.experimentTitle||'');})){
-        featTop.push({name:exp.experimentTitle||'',why:exp.hypothesis||exp.description||'',
-          selected:false,metric:linkedMetric,stage:'Experiment Canvas',cap:capLabel,_diagSent:true});
+      // v9.11.02 (Fix 7) — skip the synthetic capStore entry entirely for
+      // outcome-pulse origin: the real capability this experiment now
+      // lives under already exists and is already tracked wherever it was
+      // originally created (Capability Canvas). Creating a parallel
+      // "diag||" entry here would be pure clutter with no offsetting
+      // benefit, since nothing downstream reads or depends on it (verified:
+      // laMarkSent, scUpdateCapDrawerFooter, fcUpdateTabBadge, and
+      // fcRenderCanvas all read live state, none depend on this block
+      // having executed).
+      if(!_isOutcomePulseOrigin){
+        var capStoreKey='diag||'+linkedMetric;
+        if(!capStore[capStoreKey]){
+          capStore[capStoreKey]={
+            metricName:linkedMetric,stageLabel:'Experiment Canvas',stageId:'diag',_diagCap:true,
+            capabilities:[{name:capLabel,why:(run.problemStatement||'Diagnostic experiments linked to '+linkedMetric),
+              subCaps:null,featStore:{top:[]}}]
+          };
+        }
+        var capEntry=capStore[capStoreKey];
+        if(!capEntry.capabilities[0].featStore)capEntry.capabilities[0].featStore={top:[]};
+        if(!capEntry.capabilities[0].featStore.top)capEntry.capabilities[0].featStore.top=[];
+        var featTop=capEntry.capabilities[0].featStore.top;
+        if(!featTop.some(function(x){return x.name===(exp.experimentTitle||'');})){
+          featTop.push({name:exp.experimentTitle||'',why:exp.hypothesis||exp.description||'',
+            selected:false,metric:linkedMetric,stage:'Experiment Canvas',cap:capLabel,_diagSent:true});
+        }
       }
     }
     laMarkSent(parsed.runId,parsed.idx);

@@ -37,6 +37,19 @@ const server = http.createServer((req, res) => {
   if (urlPath === '/') urlPath = '/index.html';
 
   const filePath = path.join(ROOT, urlPath);
+  const resolvedPath = path.resolve(filePath);
+  const resolvedRoot = path.resolve(ROOT);
+
+  // Containment check — reject any request whose resolved path escapes ROOT
+  // (e.g. via ../ sequences). Must run before any fs call. path.sep is
+  // appended to resolvedRoot so a sibling folder sharing a name prefix
+  // (e.g. ROOT-evil) can't pass a naive startsWith() check.
+  if (resolvedPath !== resolvedRoot && !resolvedPath.startsWith(resolvedRoot + path.sep)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Forbidden');
+    return;
+  }
+
   const ext      = path.extname(filePath).toLowerCase();
   const mimeType = MIME[ext] || 'application/octet-stream';
 

@@ -137,15 +137,52 @@ function _pgtHideBootGate(){
 // permissive, as a second independent line of defense beyond the boot gate
 // already preventing Settings from being reachable this early.
 var currentUserRole = null;
+// Multi-app platform extension: per-membership access tier ('full_suite' |
+// 'control_tower'). Set alongside currentUserRole by _pgtSetActiveCompany()
+// below; _pgtResolveCompany() redirects away from this whole app before
+// boot completes whenever it's 'control_tower' — see the redirect helper
+// further down.
+var currentUserAccess = null;
 
-function _pgtSetActiveCompany(companyId, role, lastActiveSessionId){
+function _pgtSetActiveCompany(companyId, role, lastActiveSessionId, access){
   try{ localStorage.setItem(_PGT_ACTIVE_COMPANY_KEY, companyId); }catch(e){}
   currentUserRole = role || null;
+  currentUserAccess = access || null;
   // v8.149 fix (Issue 2): populate the local cache Home reads for "Last
   // Active" from this same membership row — undefined/omitted (the two
   // zero/error branches) leaves it null, correctly meaning "nothing to
   // show," rather than pointing at a stale or wrong session.
   if (typeof _pgtMyLastActiveSessionId !== 'undefined') _pgtMyLastActiveSessionId = lastActiveSessionId || null;
+}
+
+// Multi-app platform extension (spec §6): a control_tower-only member must
+// not land on this app's own UI, not just be redirected from a landing
+// page as an afterthought — this runs from inside the same hard gate
+// _pgtResolveCompany() already blocks all other boot code behind. Mirrors
+// _pgtResolveCompany()'s own "return false = something else took over,
+// stop booting" convention (see the zero-membership branch below) rather
+// than inventing a new one.
+//
+// Escape hatch (fix, §6a.4 Option A): the redirect has one deliberate
+// carve-out — a `?screen=team` query param skips it entirely, so an admin
+// whose own access is control_tower (a valid, orthogonal combination) can
+// still reach Team Management to fix their own access instead of being
+// permanently redirected away from the only screen that could undo it.
+// This is the link ai-cost-tower.html's avatar dropdown points at ("Team
+// Settings"). Safe to leave unconditional on role: a non-admin who adds
+// this param manually lands on exactly the same reduced Settings view any
+// non-admin already sees (_spVisibleSections() excludes Team Management
+// for them regardless) — nothing new is exposed by skipping the redirect
+// alone. Real enforcement (blocking Product Studio's AI generation) still
+// lives server-side in requireActiveCompanyMember regardless of which
+// screen this client is looking at.
+function _pgtRedirectIfControlTowerOnly(access){
+  if (access !== 'control_tower') return false;
+  var params;
+  try { params = new URLSearchParams(window.location.search); } catch (e) { params = null; }
+  if (params && params.get('screen') === 'team') return false;
+  window.location.href = 'ai-cost-tower.html';
+  return true;
 }
 
 // Resolves which company is active for this login. This is a hard gate —
@@ -159,7 +196,7 @@ async function _pgtResolveCompany(){
 
   const { data: rows, error } = await client
     .from('mt_users_companies')
-    .select('company_id, role, is_active, joined_at, last_active_session_id, mt_companies(name)')
+    .select('company_id, role, access, is_active, joined_at, last_active_session_id, mt_companies(name)')
     .eq('user_id', currentUser.id);
 
   if(error){
@@ -194,7 +231,8 @@ async function _pgtResolveCompany(){
   }
 
   if(memberships.length===1){
-    _pgtSetActiveCompany(memberships[0].company_id, memberships[0].role, memberships[0].last_active_session_id);
+    _pgtSetActiveCompany(memberships[0].company_id, memberships[0].role, memberships[0].last_active_session_id, memberships[0].access);
+    if (_pgtRedirectIfControlTowerOnly(memberships[0].access)) return false;
     return true;
   }
 
@@ -204,7 +242,8 @@ async function _pgtResolveCompany(){
   try{ stored=localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY); }catch(e){}
   var storedMembership = stored && memberships.find(function(m){ return m.company_id===stored; });
   if(storedMembership){
-    _pgtSetActiveCompany(storedMembership.company_id, storedMembership.role, storedMembership.last_active_session_id);
+    _pgtSetActiveCompany(storedMembership.company_id, storedMembership.role, storedMembership.last_active_session_id, storedMembership.access);
+    if (_pgtRedirectIfControlTowerOnly(storedMembership.access)) return false;
     return true;
   }
 
@@ -224,6 +263,7 @@ async function _pgtResolveCompany(){
   //    joined_at — the only signal left at that point.
   var fallbackCompanyId = null;
   var fallbackRole = null;
+  var fallbackAccess = null;
   try {
     const { data: recentSession } = await client
       .from('mt_sessions')
@@ -245,14 +285,17 @@ async function _pgtResolveCompany(){
     });
     fallbackCompanyId = oldestFirst[0].company_id;
     fallbackRole = oldestFirst[0].role;
+    fallbackAccess = oldestFirst[0].access;
     var fallbackLastActive = oldestFirst[0].last_active_session_id;
   } else {
     var matched = memberships.find(function(m){ return m.company_id===fallbackCompanyId; });
     fallbackRole = matched ? matched.role : null;
+    fallbackAccess = matched ? matched.access : null;
     var fallbackLastActive = matched ? matched.last_active_session_id : null;
   }
 
-  _pgtSetActiveCompany(fallbackCompanyId, fallbackRole, fallbackLastActive);
+  _pgtSetActiveCompany(fallbackCompanyId, fallbackRole, fallbackLastActive, fallbackAccess);
+  if (_pgtRedirectIfControlTowerOnly(fallbackAccess)) return false;
   return true;
 }
 
@@ -262,6 +305,24 @@ async function _pgtResolveCompany(){
 function _pgtRenderCompanyMenuItems(){
   var switchBtn=document.getElementById('hdr-switch-company-btn');
   if(switchBtn) switchBtn.style.display=(_pgtMembershipCount>=2)?'':'none';
+  // AI Cost Control Tower — open to every active member regardless of role
+  // (multi-app platform extension; previously admin-only, per v9.28). No
+  // conditional left to toggle: always visible, same as Sign Out — Cost
+  // Tower's own boot sequence already handles the no-active-company case
+  // (its "No Active Company" gate) gracefully on its own.
+}
+
+// ── Open AI Cost Control Tower (v9.28) ──
+// First use of window.open() anywhere in this codebase (confirmed during
+// build-review) — a deliberate new-tab, not a same-tab navigation, so
+// in-flight state in this tab (an open generation, unsaved left-panel
+// input) is never lost by opening the report. The new page re-derives its
+// own auth/company/role context on load (same Supabase session via
+// localStorage, same _PGT_ACTIVE_COMPANY_KEY) rather than receiving
+// anything via the window.open() call itself.
+function hdrOpenCostTower(){
+  hdrAvatarClose();
+  window.open('ai-cost-tower.html', '_blank');
 }
 
 // ── Switch Company (avatar dropdown, only visible at 2+ companies) ──
@@ -431,6 +492,12 @@ document.addEventListener('DOMContentLoaded', async function(){
   // One-time carry-forward of a pre-v8.105 unscoped BYOK key into whichever
   // company is active now — see auth.js for why this exists.
   if (typeof _migrateByokKeyIfNeeded === 'function') _migrateByokKeyIfNeeded();
+  // v9.14: second migration step, run immediately after the one above and
+  // in this order deliberately — this carries the (now company-scoped)
+  // key forward again, into the new provider-suffixed slot, so a pre-v9.14
+  // key survives BOTH migrations in sequence on a user's very first load
+  // after this feature ships. See auth.js for why this exists.
+  if (typeof _migrateByokKeyToProviderScopeIfNeeded === 'function') _migrateByokKeyToProviderScopeIfNeeded();
 
   // Genuinely block interaction for the duration of the data sync below —
   // restored in v8.104, see the note on _pgtShowBootGate() for why this
@@ -473,4 +540,13 @@ document.addEventListener('DOMContentLoaded', async function(){
   if(typeof initSegControls==='function')initSegControls();
   // Apply feature toggles on load so MI-gated elements respect default off state
   if(typeof applyFeats==='function')applyFeats();
+
+  // ?screen=team — the control_tower escape-hatch's destination (see
+  // _pgtRedirectIfControlTowerOnly() above). openSettingsToSection() already
+  // falls back to section 0 for a non-admin, so this is safe unconditionally.
+  try {
+    if (new URLSearchParams(window.location.search).get('screen') === 'team' && typeof openSettingsToSection === 'function') {
+      openSettingsToSection(6);
+    }
+  } catch (e) {}
 });

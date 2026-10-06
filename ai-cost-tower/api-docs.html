@@ -1,0 +1,56 @@
+<!doctype html>
+<!--
+  Branded entry point for the OpenAPI Ingestion Layer's published reference —
+  redirects to the correct proxy's /docs/ (Render, per environment) instead
+  of exposing the raw onrender.com hostname as the link a person clicks.
+
+  Deliberately a client-side redirect, not a netlify.toml server-side one:
+  this project has exactly one netlify.toml, checked into this same repo and
+  deployed identically (same zip) to both the dev and prod Netlify sites —
+  confirmed live (dev already on v9.32, prod still on v9.31 at the time this
+  was written, two independently-timed deploys of the one shared file). A
+  static netlify.toml redirect rule can't point at pgt-proxy-dev on one site
+  and product-diagnostics-proxy on the other when both sites serve the exact
+  same file with no build step to tell them apart — this project's own
+  git-based CI doesn't exist for Netlify's [context.*] overrides to apply to
+  either. scripts/env.js solves the identical problem for Supabase/proxy URLs
+  by being excluded from the zip and swapped in by hand per deploy; this page
+  can't use that trick (it's a real file that belongs in both zips), so it
+  detects environment the same way actOpenApiDocs() already does client-side
+  and redirects from there instead.
+
+  Kept as a tiny standalone file (not inlined into ai-cost-tower.html) so it
+  works as a real, bookmarkable, directly-linkable URL on its own.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>API Documentation</title>
+<!-- Sets window.PROXY_URL per-hostname (dev vs prod) — the one file this
+     redirect actually depends on. Same file every other page in this app
+     already requires to be present (excluded from every zip on purpose,
+     dropped into scripts/ once by hand) — if it were missing, the whole
+     app would already be broken, not just this page, so no extra fallback
+     handling is added here beyond what actOpenApiDocs() itself has. -->
+<script src="../scripts/env.js"></script>
+</head>
+<body>
+<script>
+  // Same isLocal/PROXY_URL-based origin resolution as
+  // scripts/cost-tower.js's actOpenApiDocs() — kept in sync manually, not
+  // shared via a common module, since this page has no other dependency on
+  // that script and pulling it in would be a heavier coupling than one
+  // small function actually warrants.
+  var host = window.location.hostname;
+  var isLocal = host === '' || host === 'localhost' || host === '127.0.0.1';
+  var proxyOrigin = isLocal
+    ? 'http://localhost:3001'
+    : ((typeof PROXY_URL !== 'undefined' && PROXY_URL) ? PROXY_URL.replace(/\/api\/anthropic\/?$/, '') : 'https://product-diagnostics-proxy.onrender.com');
+  window.location.replace(proxyOrigin + '/docs/');
+</script>
+<p>Redirecting to the API documentation&hellip; <a id="fallback-link" href="#">click here if you are not redirected</a>.</p>
+<script>
+  document.getElementById('fallback-link').href = proxyOrigin + '/docs/';
+</script>
+</body>
+</html>

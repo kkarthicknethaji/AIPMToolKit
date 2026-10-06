@@ -4,13 +4,14 @@
 // scPiSelectedIds and scStoryIdCounter are global — declared in story-canvas.js
 
 // ── State ──
-let newScFilter={priority:[],readiness:[],piStatus:[],dependencies:null};
+let newScFilter={priority:[],readiness:[],piStatus:[],dependencies:null,briefRq:[],storyType:[]};
 let newScCollapsedGroups=new Set();
 let newScPanelStoryId=null;
 let newScPanelFeatId=null;
 let newScFilterOpen=false;
 let newScActiveNavFeat=null; // null = All Stories, else feature id
 let newScProtoView=false;    // true = Prototype view active
+let newScNavCollapsed=false; // left nav collapsed state, persisted across newScRender() rebuilds
 
 // ── Normalize active feature state ──
 // Validates newScActiveNavFeat is still a visible SC feature.
@@ -37,13 +38,31 @@ function newScRender(){
     newScRenderEmpty(layout);
     return;
   }
+  // Item 4 fix — preserve scroll position across the full innerHTML
+  // rebuild below, matching the identical pattern already proven in
+  // capability-canvas.js's ccRenderMainContent() (.cc-cap-grid-wrap) and
+  // kpi-tree.js's renderMM() (.stages), via the shared _uiCaptureScrollTop()/
+  // _uiRestoreScrollTop() helpers (utils.js). Capture BEFORE rebuild.
+  const _savedScrollTop=_uiCaptureScrollTop('nsc-scroll');
+  // Item 4 code-review fix — capture the active-feature scope BEFORE
+  // normalizing, so a restore is skipped if normalization actually changes
+  // it (e.g. the last visible story of the active feature just got removed,
+  // dropping the view out to "All Stories"). The saved scrollTop belongs to
+  // whatever list was on screen before the rebuild — restoring it into a
+  // different, differently-ordered list lands the PM at an arbitrary
+  // position instead of the top of genuinely new content.
+  const _navFeatBeforeNormalize=newScActiveNavFeat;
   // Normalize active feature before building layout
   newScNormalizeActiveFeature();
+  const _scopeChanged=(newScActiveNavFeat!==_navFeatBeforeNormalize);
   layout.innerHTML=newScBuildLayout();
   newScRenderLeftNav();
   newScRenderMain();
   newScUpdateActionBar();
   newScUpdateTabBadge();
+  // Restore AFTER rebuild, clamped (inside the helper) against the new
+  // content's scrollHeight in case the list is now shorter than before.
+  if(!_scopeChanged)_uiRestoreScrollTop('nsc-scroll',_savedScrollTop);
   // Re-open panel if previously open (only in stories view)
   if(!newScProtoView&&newScPanelStoryId&&newScPanelFeatId){
     const feat=scCanvas.find(f=>f.id===newScPanelFeatId);
@@ -53,7 +72,7 @@ function newScRender(){
 }
 
 function newScClear(){
-  newScFilter={priority:[],readiness:[],piStatus:[],dependencies:null};
+  newScFilter={priority:[],readiness:[],piStatus:[],dependencies:null,storyType:[]};
   newScCollapsedGroups=new Set();
   newScPanelStoryId=null;
   newScPanelFeatId=null;
@@ -79,14 +98,16 @@ function newScBuildLayout(){
   const isProto=!!(newScProtoView&&showToggle);
   const pcModeClass=isProto?' pc-mode':'';
   return `<div class="nsc-body">
-    <div class="nsc-left" id="nsc-left">
+    <div class="nsc-left${newScNavCollapsed?' collapsed':''}" id="nsc-left">
       <div class="nsc-left-hdr">
         <div class="nsc-left-hdr-inner">
           <div class="nsc-left-title">Story Canvas</div>
           <div class="nsc-left-sub">Groom and select stories for PI</div>
         </div>
-        <button class="sc-cap-nav-collapse" id="nsc-collapse-btn" onclick="newScToggleNav()" title="Collapse" style="color:var(--t3);">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/><polyline points="21 18 15 12 21 6"/></svg>
+        <button class="sc-cap-nav-collapse" id="nsc-collapse-btn" onclick="newScToggleNav()" title="${newScNavCollapsed?'Expand':'Collapse'}" style="color:var(--t3);">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">${newScNavCollapsed
+            ?'<polyline points="9 18 15 12 9 6"/><polyline points="3 18 9 12 3 6"/>'
+            :'<polyline points="15 18 9 12 15 6"/><polyline points="21 18 15 12 21 6"/>'}</svg>
         </button>
       </div>
       <div id="nsc-nav-tree"></div>
@@ -115,19 +136,17 @@ function newScBuildLayout(){
                   ${newScBuildFilterPanel()}
                 </div>
               </div>
-              <div style="position:relative;">
-                <button class="export-cta-btn" id="nsc-export-btn" onclick="newScExportAll()" disabled><i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export</button>
-              </div>
-              ${((typeof canEditSession!=='function')||canEditSession())?`<button class="cc-tb-btn-add" onclick="newScShowAddStoryModal(null)"><i class="ti ti-plus" style="font-size:11px;" aria-hidden="true"></i> Add Story</button>`:''}`
+              ${_newScBriefFilterBtnHtml()}
+              <button class="tm-dots" id="nsc-toolbar-kebab" onclick="event.stopPropagation();newScToggleToolbarMenu(this)" aria-label="Story Canvas actions" aria-haspopup="true" aria-expanded="false"><i class="ti ti-dots-vertical" aria-hidden="true"></i></button>`
               :`<button class="export-cta-btn" id="nsc-proto-export-btn" onclick="pcAvailCall('pcExportPrototype','${newScActiveNavFeat||''}')" ${!(typeof protoStore!=='undefined'&&protoStore[newScActiveNavFeat]&&protoStore[newScActiveNavFeat].variants&&protoStore[newScActiveNavFeat].variants['v1']&&protoStore[newScActiveNavFeat].variants['v1'].generated)?'disabled':''}><i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export Prototype</button>`}
             </div>
           </div>
           <div class="sc-legend" style="margin-bottom:4px;${isProto?'display:none;':''}">
             <span class="sc-legend-lbl">Card states</span>
             <div class="sc-legend-item"><div class="sc-legend-bar" style="border-left:3px solid var(--label);background:#fff;border-radius:0 2px 2px 0;"></div> Not selected</div>
-            <div class="sc-legend-item"><div class="sc-legend-bar" style="border-left:3px solid var(--purple);background:var(--purple-pale);border-radius:0 2px 2px 0;"></div> PI selected</div>
+            <div class="sc-legend-item"><div class="sc-legend-bar" style="border-left:3px solid var(--purple);background:var(--purple-pale);border-radius:0 2px 2px 0;"></div> Release Selected</div>
             <div class="sc-legend-item"><div class="sc-legend-bar" style="border-left:3px solid var(--green);background:#fff;border-radius:0 2px 2px 0;"></div> DoR ready</div>
-            <div class="sc-legend-item"><div class="sc-legend-bar" style="border-left:3px solid var(--green);background:#E8F5F0;border-radius:0 2px 2px 0;border-top:3px solid var(--green);"></div> In PI plan</div>
+            <div class="sc-legend-item"><div class="sc-legend-bar" style="border-left:3px solid var(--green);background:#E8F5F0;border-radius:0 2px 2px 0;border-top:3px solid var(--green);"></div> In Release Plan</div>
           </div>
         </div>
         <div class="nsc-scroll" id="nsc-scroll" style="${isProto?'display:none;':''}">
@@ -142,7 +161,7 @@ function newScBuildLayout(){
             <span class="sc-action-count" id="nsc-action-info"></span>
           </div>
           <div class="sc-action-btns">
-            <button class="sc-gen-btn" id="nsc-send-pi-btn" onclick="newScSendToPI()" disabled><i class="ti ti-calendar-event" style="font-size:12px;" aria-hidden="true"></i> <span id="nsc-send-pi-label">Send to PI</span></button>
+            <button class="sc-gen-btn" id="nsc-send-pi-btn" onclick="newScSendToPI()" disabled><i class="ti ti-calendar-event" style="font-size:12px;" aria-hidden="true"></i> <span id="nsc-send-pi-label">Send to Release</span></button>
           </div>
         </div>
         <div class="pc-view${isProto?' on':''}" id="pc-view">
@@ -185,6 +204,12 @@ function pcAvailCall(fn,arg){
 
 // ── View toggle ──
 function newScSetProtoView(on){
+  // v9.25 — belt-and-suspenders alongside pcRenderView()'s own guard:
+  // TURNING PROTO VIEW OFF doesn't necessarily call pcRenderView() again
+  // (newScRenderMain() takes the non-proto branch instead once
+  // newScProtoView is false), so that guard alone wouldn't catch this
+  // specific transition. voiceStopActive() is a safe no-op either way.
+  voiceStopActive('abort');
   newScProtoView=!!on;
   if(!newScActiveNavFeat)newScProtoView=false;
   if(newScProtoView&&typeof newScClosePanel==='function')newScClosePanel();
@@ -193,6 +218,12 @@ function newScSetProtoView(on){
 
 // ── Nav feat setter — resets proto view on nav change (v1 behaviour) ──
 function newScSetNavFeat(featId){
+  // v9.25 — switching to a different feature while #pc-ctx-input is being
+  // dictated into would otherwise misattribute that feature's dictated
+  // context to the NEW feature (same shape of gap found in Feature
+  // Canvas's scOpenPanel() — a context change, not a DOM destroy, on a
+  // surface keyed by featId rather than a per-instance textarea).
+  voiceStopActive('abort');
   newScActiveNavFeat=featId;
   newScProtoView=false;
   newScRender();
@@ -202,16 +233,78 @@ function newScBuildFilterPanel(){
   return `<div style="padding:8px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Priority</div>
     ${['Must Have','Should Have','Could Have','Won\'t Have'].map(p=>`<label class="fc-filter-row"><input type="checkbox" onchange="newScToggleFilter_v('priority','${e(p)}')" ${newScFilter.priority.includes(p)?'checked':''}> ${p}</label>`).join('')}
     <div style="border-top:1px solid var(--divider);margin:4px 0;"></div>
+    <div style="padding:6px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Story Type</div>
+    ${[{label:'Traditional',value:'traditional'},{label:'AI Feature',value:'ai_feature'},{label:'Agentic',value:'agentic'}].map(t=>`<label class="fc-filter-row"><input type="checkbox" onchange="newScToggleFilter_v('storyType','${t.value}')" ${newScFilter.storyType.includes(t.value)?'checked':''}> ${t.label}</label>`).join('')}
+    <div style="border-top:1px solid var(--divider);margin:4px 0;"></div>
     <div style="padding:6px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Readiness</div>
     ${['Ready','Not Ready','Points not set'].map(r=>`<label class="fc-filter-row"><input type="checkbox" onchange="newScToggleFilter_v('readiness','${e(r)}')" ${newScFilter.readiness.includes(r)?'checked':''}> ${r}</label>`).join('')}
     <div style="border-top:1px solid var(--divider);margin:4px 0;"></div>
-    <div style="padding:6px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">PI Status</div>
-    ${['PI Selected','Not Selected'].map(s=>`<label class="fc-filter-row"><input type="checkbox" onchange="newScToggleFilter_v('piStatus','${e(s)}')" ${newScFilter.piStatus.includes(s)?'checked':''}> ${s}</label>`).join('')}
+    <div style="padding:6px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Release Status</div>
+    ${['Release Selected','Not Selected'].map(s=>`<label class="fc-filter-row"><input type="checkbox" onchange="newScToggleFilter_v('piStatus','${e(s)}')" ${newScFilter.piStatus.includes(s)?'checked':''}> ${s}</label>`).join('')}
     <div style="border-top:1px solid var(--divider);margin:4px 0;"></div>
     <div style="padding:6px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Dependencies</div>
     ${['Yes','No'].map(d=>`<label class="fc-filter-row"><input type="checkbox" onchange="newScToggleFilter_v('dependencies','${e(d)}')" ${newScFilter.dependencies===d?'checked':''}> ${d}</label>`).join('')}
     <div style="border-top:1px solid var(--divider);margin:4px 4px 4px;"></div>
     <div style="padding:4px 12px 8px;"><button onclick="newScClearFilters()" style="font-size:10px;color:var(--purple);background:none;border:none;cursor:pointer;font-family:var(--font);padding:0;">Clear all filters</button></div>`;
+}
+
+// §9.2 — standalone "Brief" filter (flat list of finalized RQs, no Origin
+// wrapper/nesting) — Story Canvas has no pre-existing Origin filter to nest
+// a "Requirement Agent" value under. Its own toolbar button + popover, NOT
+// folded into the "Filter" dropdown above — matches PI Canvas's §9.3
+// pattern exactly (confirmed gap: an earlier pass nested this inside
+// newScBuildFilterPanel(), which was inconsistent with PI's separate
+// button and with the approved prototype). Filters read the story's
+// PARENT FEATURE's intakeBriefId (no new field on story objects, §5.3).
+function _newScBriefFilterBtnHtml(){
+  const convs=(typeof raConversations!=='undefined'?raConversations:[]).filter(function(c){return c.status==='finalized';});
+  if(!convs.length)return'';
+  return `<div style="position:relative;">
+    <button class="cc-tb-btn${newScFilter.briefRq.length>0?' active':''}" id="nsc-brief-filter-btn" onclick="newScToggleBriefFilterDrop(event)"><i class="ti ti-filter" style="font-size:10px;" aria-hidden="true"></i> Brief <i class="ti ti-chevron-down" style="font-size:10px;" aria-hidden="true"></i></button>
+    <div class="cc-export-drop" id="nsc-brief-filter-drop">
+      <div style="padding:8px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Requirement Briefs</div>
+      ${convs.map(function(c){
+        const cnt=(typeof scCanvas!=='undefined'?scCanvas.filter(f=>f.intakeBriefId===c.id).reduce((a,f)=>a+(f.stories?f.stories.filter(s=>s._inSC&&!s._hiddenFromSC).length:0),0):0);
+        const checked=newScFilter.briefRq.includes(c.id);
+        return `<label class="fc-filter-row"><input type="checkbox" onchange="newScToggleFilter_v('briefRq','${e(c.id)}');newScUpdateBriefFilterBtn();" ${checked?'checked':''}> ${e(c.rqNumber||'')} &mdash; ${e(c.title||'Untitled')} <span style="margin-left:auto;font-size:9px;color:var(--t3);">${cnt}</span></label>`;
+      }).join('')}
+      <div style="border-top:1px solid var(--divider);margin:4px 0;"></div>
+      <div style="padding:4px 12px 8px;"><button onclick="newScClearBriefFilter()" style="font-size:10px;color:var(--purple);background:none;border:none;cursor:pointer;font-family:var(--font);padding:0;">Clear all filters</button></div>
+    </div>
+  </div>`;
+}
+function newScToggleBriefFilterDrop(evt){
+  if(evt)evt.stopPropagation();
+  const drop=document.getElementById('nsc-brief-filter-drop');
+  if(!drop)return;
+  const isOpen=drop.classList.contains('open');
+  if(isOpen){
+    drop.classList.remove('open');
+    document.removeEventListener('mousedown',_newScBriefFilterDropOutside);
+  } else {
+    drop.classList.add('open');
+    setTimeout(()=>document.addEventListener('mousedown',_newScBriefFilterDropOutside),0);
+  }
+}
+function _newScBriefFilterDropOutside(ev){
+  const drop=document.getElementById('nsc-brief-filter-drop');
+  if(!drop){document.removeEventListener('mousedown',_newScBriefFilterDropOutside);return;}
+  if(!drop.contains(ev.target)){
+    drop.classList.remove('open');
+    document.removeEventListener('mousedown',_newScBriefFilterDropOutside);
+  }
+}
+function newScUpdateBriefFilterBtn(){
+  const btn=document.getElementById('nsc-brief-filter-btn');
+  if(btn)btn.classList.toggle('active',newScFilter.briefRq.length>0);
+}
+function newScClearBriefFilter(){
+  newScFilter.briefRq=[];
+  const drop=document.getElementById('nsc-brief-filter-drop');
+  if(drop)drop.querySelectorAll('input[type=checkbox]').forEach(cb=>cb.checked=false);
+  newScUpdateBriefFilterBtn();
+  newScUpdateFilterBadge();
+  newScRenderMain();
 }
 
 // ── Left nav ──
@@ -288,10 +381,9 @@ function newScRenderLeftNav(){
 function newScToggleNav(){
   const nav=document.getElementById('nsc-left');
   if(!nav)return;
-  nav.classList.toggle('collapsed');
+  const isCol=newScNavCollapsed=nav.classList.toggle('collapsed');
   const btn=document.getElementById('nsc-collapse-btn');
   if(btn){
-    const isCol=nav.classList.contains('collapsed');
     btn.title=isCol?'Expand':'Collapse';
     btn.innerHTML=isCol
       ?'<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/><polyline points="3 18 9 12 3 6"/></svg>'
@@ -385,7 +477,30 @@ function newScRenderMain(){
     const f=scCanvas.find(x=>x.id===fid);
     return a+(f&&f.stories?f.stories.filter(s=>s._stagedForPI).length:0);
   },0);
-  if(piSub)piSub.textContent=piCount>0?piCount+' PI selected':'Select stories for PI first';
+  if(piSub)piSub.textContent=piCount>0?piCount+' Release Selected':'Select Stories for Release First';
+}
+
+// Toolbar kebab menu - replaces the old standalone Add Story + Export
+// buttons. Uses the generic _uiRowMenuToggle(triggerEl, menuHtml) helper
+// already used by Outcome Pulse / Home / Team Management / PI Planning.
+// Story Canvas has no bulk-upload path for stories, so unlike Capability
+// Canvas / Feature Canvas this menu is flat - no submenu, no chevron.
+function newScToggleToolbarMenu(triggerEl){
+  const canEdit=(typeof canEditSession!=='function')||canEditSession();
+  const addItem=canEdit?'<div class="tm-menu-item" role="menuitem" tabindex="-1" onclick="_uiRowMenuClose();newScShowAddStoryModal(null)"><i class="ti ti-plus" aria-hidden="true"></i> Add Story</div>':'';
+  const menuHtml='<div class="tm-menu-static" role="menu">'
+    +addItem
+    +'<div class="tm-menu-item" role="menuitem" tabindex="-1" onclick="_uiRowMenuClose();newScExportAll()"><i class="ti ti-download" aria-hidden="true"></i> Export</div>'
+    +'</div>';
+  _uiRowMenuToggle(triggerEl,menuHtml);
+}
+
+// Finds the single release plan (out of the global piPlans array) that owns
+// this story's sprint assignment, if any. Story Canvas has zero plan-
+// awareness beyond this lookup - a story belongs to exactly one plan's
+// storyAssignments at a time, never dual-tagged.
+function scFindOwningPlan(storyId){
+  return (typeof piPlans!=='undefined'&&Array.isArray(piPlans)) ? (piPlans.find(function(p){ return p.storyAssignments && p.storyAssignments[storyId]; }) || null) : null;
 }
 
 function newScBuildStoryCard(st,feat,stageColor){
@@ -393,9 +508,11 @@ function newScBuildStoryCard(st,feat,stageColor){
   const isPiSel=!!st._stagedForPI;
   const isInPIPlan=!!st._inPIPlan;
   const hasDeps=st.dependencies&&st.dependencies.length>0;
-  // Check if story is assigned to a sprint in PI plan
-  const sprintAssignment=typeof piPlan!=='undefined'&&piPlan&&piPlan.storyAssignments&&piPlan.storyAssignments[st.id];
+  // Check if story is assigned to a sprint in its owning release plan
+  const _owningPlan=scFindOwningPlan(st.id);
+  const sprintAssignment=_owningPlan&&_owningPlan.storyAssignments[st.id];
   const sprintLabel=sprintAssignment?('Sprint '+(sprintAssignment.sprint||'?')):null;
+  const piPlanName=_owningPlan?_owningPlan.name:'In Release Plan';
 
   let cls='nsc-story-card sc-card';
   if(isInPIPlan||sprintLabel)cls+=' nsc-pi-planned';
@@ -421,8 +538,8 @@ function newScBuildStoryCard(st,feat,stageColor){
       <div class="sc-card-actions">
         ${_canEditScCard?`<button class="sc-card-pencil" onclick="event.stopPropagation();newScShowEditStoryModal('${e(st.id)}','${e(feat.id)}')" title="Edit story" aria-label="Edit story" style="background:none;border:none;cursor:pointer;padding:2px;color:var(--t3);display:flex;align-items:center;"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`:''}
         ${isInPIPlan
-          ?`<div class="nsc-pi-tag" title="In PI plan"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> In PI plan ${_canEditScCard?`<span class="nsc-pi-tag-x" onclick="event.stopPropagation();newScConfirmRemoveFromPI('${e(st.id)}','${e(feat.id)}')" title="Remove from PI">&#x2715;</span>`:''}</div>`
-          :(_canEditScCard?`<div class="sc-card-check${isPiSel?' sc-card-check-pi':''}" onclick="event.stopPropagation();newScToggleStoryPiSelect('${e(st.id)}','${e(feat.id)}')" title="${isPiSel?'Deselect for PI':'Select for PI'}">${isPiSel?'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>':''}</div>`:'')
+          ?`<div class="nsc-pi-tag" title="${e(piPlanName)}"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> ${e(piPlanName)} ${_canEditScCard?`<span class="nsc-pi-tag-x" onclick="event.stopPropagation();newScConfirmRemoveFromPI('${e(st.id)}','${e(feat.id)}')" title="Remove from Release">&#x2715;</span>`:''}</div>`
+          :(_canEditScCard?`<div class="sc-card-check${isPiSel?' sc-card-check-pi':''}" onclick="event.stopPropagation();newScToggleStoryPiSelect('${e(st.id)}','${e(feat.id)}')" title="${isPiSel?'Deselect for Release':'Select for Release'}">${isPiSel?'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>':''}</div>`:'')
         }
         ${_canEditScCard?`<button class="sc-card-remove" onclick="event.stopPropagation();newScDeleteStoryById('${e(st.id)}','${e(feat.id)}')" title="Remove story">
           <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -432,6 +549,7 @@ function newScBuildStoryCard(st,feat,stageColor){
     <div class="sc-card-name" style="margin:4px 0 3px;">${e(st.title)}</div>
     <div class="sc-card-footer">
       <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;">
+        ${scStoryTypeBadge(st.storyType)}
         ${st.priority?`<span style="font-size:7.5px;font-weight:700;background:${priColor};color:${priText};border-radius:3px;padding:1px 5px;">${e(st.priority)}</span>`:''}
         <span style="font-size:8.5px;font-weight:600;color:var(--t3);">${ptsLabel}</span>
         ${dorLabel}
@@ -516,14 +634,14 @@ function newScUpdateActionBar(){
   const info=document.getElementById('nsc-action-info');
   if(info){
     if(piCount>0)info.innerHTML=`<strong>${piCount}</strong> stor${piCount!==1?'ies':'y'} selected &middot; ~<strong>${piPts}</strong> pts`;
-    else info.innerHTML=totalStories>0?`${totalStories} stor${totalStories!==1?'ies':'y'} — select to send to PI`:'';
+    else info.innerHTML=totalStories>0?`${totalStories} stor${totalStories!==1?'ies':'y'} — select to send to release`:'';
   }
 
   // Send to PI button
   const btn=document.getElementById('nsc-send-pi-btn');
   const btnLbl=document.getElementById('nsc-send-pi-label');
   if(btn){btn.disabled=piCount===0;}
-  if(btnLbl)btnLbl.textContent=piCount>0?'Send to PI ('+piCount+')':'Send to PI';
+  if(btnLbl)btnLbl.textContent=piCount>0?'Send to Release ('+piCount+')':'Send to Release';
 }
 
 function newScToggleSelectAll(chk){
@@ -544,22 +662,13 @@ function newScSelectAll(){
 async function newScSendToPI(){
   if(typeof canEditSession==='function'&&!canEditSession())return;
   const piCount=scCanvas.reduce((a,f)=>a+(f.stories?f.stories.filter(s=>s._inSC&&!s._hiddenFromSC&&s._stagedForPI).length:0),0);
-  if(piCount===0){showToast('Select stories for PI first.','info');return;}
-  // v9.01.01 fix: confirmed via diagnostic logging that piPlan is still
-  // null at this point for any session that reaches Story Canvas without
-  // ever having opened PI Canvas first (e.g. Discovery Map -> Feature
-  // Canvas -> Story Canvas). The guard below previously just skipped the
-  // push silently whenever piPlan was null -- meaning the story-level
-  // _inPIPlan flags got set (so Story Canvas looked correct) but the
-  // actual backlog array PI Canvas and the tab-reveal check depend on was
-  // never created at all. Initializing it minimally here, matching only
-  // the two fields anything downstream actually needs (backlogStoryIds,
-  // storyAssignments) -- NOT a full plan shape (name/sprints/etc), since
-  // piOnTabEnter()/piRenderBoard() are now fixed (see below) to correctly
-  // treat "no sprints yet" as the backlog-only empty state, not a
-  // generated plan.
-  if(typeof piPlan==='undefined'||!piPlan){
-    piPlan={backlogStoryIds:[],storyAssignments:{}};
+  if(piCount===0){showToast('Select stories for release first.','info');return;}
+  // Story Canvas has zero plan-awareness by design - it never references
+  // any release plan object. Stories staged for PI go straight into the
+  // GLOBAL backlog array; which plan (if any) eventually claims them is
+  // entirely PI Planning's concern.
+  if(typeof piBacklogStoryIds==='undefined'||!Array.isArray(piBacklogStoryIds)){
+    piBacklogStoryIds=[];
   }
   // Dispatch: mark _inPIPlan, clear _stagedForPI, sync backlog
   scCanvas.forEach(f=>{
@@ -568,11 +677,8 @@ async function newScSendToPI(){
       if(st._inSC&&!st._hiddenFromSC&&st._stagedForPI){
         st._inPIPlan=true;
         st._stagedForPI=false;
-        if(typeof piPlan!=='undefined'&&piPlan){
-          if(!piPlan.backlogStoryIds)piPlan.backlogStoryIds=[];
-          if(!piPlan.backlogStoryIds.includes(st.id)&&!(piPlan.storyAssignments&&piPlan.storyAssignments[st.id])){
-            piPlan.backlogStoryIds.push(st.id);
-          }
+        if(!piBacklogStoryIds.includes(st.id)&&!scFindOwningPlan(st.id)){
+          piBacklogStoryIds.push(st.id);
         }
       }
     });
@@ -591,7 +697,7 @@ async function newScSendToPI(){
   const sendBtn=document.getElementById('nsc-send-pi-btn');
   if(sendBtn){
     const origHtml=sendBtn.innerHTML;
-    sendBtn.innerHTML='<i class="ti ti-check" style="font-size:12px;" aria-hidden="true"></i> <span>'+piCount+' sent to PI</span>';
+    sendBtn.innerHTML='<i class="ti ti-check" style="font-size:12px;" aria-hidden="true"></i> <span>'+piCount+' Sent to Release</span>';
     sendBtn.style.cssText='background:var(--green);color:#fff;border:none;';
     sendBtn.disabled=true;
     setTimeout(()=>{
@@ -609,7 +715,7 @@ async function newScSendToPI(){
     if(typeof fcUpdateTabBadge==='function')fcUpdateTabBadge();
     if(typeof fcRenderCanvas==='function')fcRenderCanvas();
   }
-  showToast(`${piCount} stor${piCount!==1?'ies':'y'} added to PI Canvas.`,'success');
+  showToast(`${piCount} stor${piCount!==1?'ies':'y'} added to Release Canvas.`,'success');
   // v9.01-diag fix: this save is now AWAITED before the function returns.
   // Previously fire-and-forget — if the user navigated to Home quickly
   // after Send to PI, homeClearSession()'s own (also unawaited) save
@@ -663,7 +769,7 @@ function newScToggleFilter_v(section,value){
     if(idx>=0)arr.splice(idx,1);
     else arr.push(value);
   }
-  const hasFilter=newScFilter.priority.length||newScFilter.readiness.length||newScFilter.piStatus.length||newScFilter.dependencies;
+  const hasFilter=newScFilter.priority.length||newScFilter.readiness.length||newScFilter.piStatus.length||newScFilter.dependencies||newScFilter.briefRq.length||newScFilter.storyType.length;
   const btn=document.getElementById('nsc-filter-btn');
   if(btn)btn.classList.toggle('active',!!hasFilter);
   newScUpdateFilterBadge();
@@ -674,7 +780,7 @@ function newScUpdateFilterBadge(){
   const badge=document.getElementById('nsc-filter-badge');
   const lbl=document.getElementById('nsc-filter-badge-label');
   if(!badge||!lbl)return;
-  const count=(newScFilter.priority.length)+(newScFilter.readiness.length)+(newScFilter.piStatus.length)+(newScFilter.dependencies?1:0);
+  const count=(newScFilter.priority.length)+(newScFilter.readiness.length)+(newScFilter.piStatus.length)+(newScFilter.dependencies?1:0)+(newScFilter.storyType.length);
   if(count>0){
     lbl.textContent=count+' filter'+(count!==1?'s':'');
     badge.style.display='inline-flex';
@@ -684,7 +790,7 @@ function newScUpdateFilterBadge(){
 }
 
 function newScClearFilters(){
-  newScFilter={priority:[],readiness:[],piStatus:[],dependencies:null};
+  newScFilter={priority:[],readiness:[],piStatus:[],dependencies:null,briefRq:[],storyType:[]};
   const btn=document.getElementById('nsc-filter-btn');
   if(btn)btn.classList.remove('active');
   const drop=document.getElementById('nsc-filter-drop');
@@ -694,12 +800,14 @@ function newScClearFilters(){
     document.removeEventListener('mousedown',_newScFilterOutside);
   }
   newScUpdateFilterBadge();
+  newScUpdateBriefFilterBtn();
   newScRenderMain();
 }
 
 function newScApplyFilter(stories,feat){
   let result=stories;
   if(newScFilter.priority.length)result=result.filter(s=>newScFilter.priority.includes(s.priority));
+  if(newScFilter.storyType.length)result=result.filter(s=>newScFilter.storyType.includes(s.storyType||'traditional'));
   if(newScFilter.readiness.length){
     result=result.filter(s=>{
       if(newScFilter.readiness.includes('Ready')&&s.dor==='READY')return true;
@@ -710,13 +818,17 @@ function newScApplyFilter(stories,feat){
   }
   if(newScFilter.piStatus.length){
     result=result.filter(s=>{
-      if(newScFilter.piStatus.includes('PI Selected')&&(s._stagedForPI||s._inPIPlan))return true;
+      if(newScFilter.piStatus.includes('Release Selected')&&(s._stagedForPI||s._inPIPlan))return true;
       if(newScFilter.piStatus.includes('Not Selected')&&!s._stagedForPI&&!s._inPIPlan)return true;
       return false;
     });
   }
   if(newScFilter.dependencies==='Yes')result=result.filter(s=>s.dependencies&&s.dependencies.length>0);
   if(newScFilter.dependencies==='No')result=result.filter(s=>!s.dependencies||s.dependencies.length===0);
+  // §9.2 — Brief filter reads the PARENT FEATURE's intakeBriefId (no new
+  // field on story objects) — one added condition, same cost profile as
+  // every other filter check in this function, not a new filtering pass.
+  if(newScFilter.briefRq.length)result=feat&&newScFilter.briefRq.includes(feat.intakeBriefId)?result:[];
   return result;
 }
 
@@ -798,16 +910,16 @@ function newScRenderPanelContent(st,feat){
   const allStories=[];
   scCanvas.forEach(f=>{if(f.stories)f.stories.forEach(s=>{if(s.id!==st.id)allStories.push({id:s.id,title:s.title,feat:f.name});});});
 
-  // Acceptance criteria
-  const acHtml=(st.scenarios&&st.scenarios.length>0)
-    ?`<div class="sc-ac-block">`+st.scenarios.map((sc,si)=>{
-        if(typeof sc==='string'){
-          return `<div class="sc-ac-scenario"><div style="flex:1;white-space:pre-wrap;font-size:10px;color:var(--t2);line-height:1.5;">${e(sc)}</div></div>`;
-        }
-        return `<div class="sc-ac-scenario"><div style="flex:1;white-space:pre-wrap;"><span class="sc-ac-kw">Scenario:</span> ${e(sc.name||'')}\n<span class="sc-ac-kw">Given</span> ${e(sc.given||'')}\n<span class="sc-ac-kw">When</span>  ${e(sc.when||'')}\n<span class="sc-ac-kw">Then</span>  ${e(sc.then||'')}${sc.and?`\n<span class="sc-ac-kw">And</span>   ${e(sc.and)}`:''}
-        </div></div>`;
-      }).join('')+`</div>`
-    :'<div style="font-size:10px;color:var(--label);font-style:italic;">No acceptance criteria — generate stories in Feature Canvas to include ACs.</div>';
+  // Story body — Statement+AC / Outcome+Evals / Goal+Operating Contract,
+  // chosen per st.storyType. Shared with Release Canvas's own detail panels
+  // via scGetStorySections() (feature-canvas.js) so both screens stay in
+  // sync without duplicating the per-type branching.
+  const _scSections=(typeof scGetStorySections==='function')?scGetStorySections(st):[];
+  const sectionsHtml=_scSections.map((sec,si)=>`
+    <div style="margin-bottom:14px;">
+      <div class="pi-section-lbl" style="margin-bottom:5px;">${e(sec.label)}</div>
+      ${si===0?`<div style="background:var(--card);border-radius:5px;padding:8px 10px;">${sec.html}</div>`:sec.html}
+    </div>`).join('');
 
   // v9.08: computed once per panel render, matches the readOnly-inline-
   // in-template pattern used elsewhere (settings-page.js Company Profile).
@@ -816,17 +928,7 @@ function newScRenderPanelContent(st,feat){
     <!-- Traceability — uses FC scRenderLineage with nsc-trace-meta target -->
     <div id="nsc-trace-meta" style="margin-bottom:10px;"></div>
 
-    <!-- Story statement (read-only) -->
-    <div style="margin-bottom:14px;">
-      <div class="pi-section-lbl" style="margin-bottom:5px;">Story Statement</div>
-      <div style="font-size:11px;color:var(--t3);line-height:1.5;font-style:italic;background:var(--card);border-radius:5px;padding:8px 10px;">${e(st.statement||'')}</div>
-    </div>
-
-    <!-- Acceptance Criteria (read-only) -->
-    <div style="margin-bottom:14px;">
-      <div class="pi-section-lbl" style="margin-bottom:5px;">Acceptance Criteria</div>
-      ${acHtml}
-    </div>
+    ${sectionsHtml}
 
     <!-- DoR toggle -->
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--divider);">
@@ -877,7 +979,7 @@ function newScRenderPanelContent(st,feat){
 
     <!-- Notes -->
     <div>
-      <div class="pi-section-lbl" style="margin-bottom:5px;">Notes <span style="font-size:9px;color:var(--label);font-weight:400;">(exported in PI DOCX)</span></div>
+      <div class="pi-section-lbl" style="margin-bottom:5px;">Notes <span style="font-size:9px;color:var(--label);font-weight:400;">${RELEASE_EXPORT_NOTE_LABEL}</span></div>
       <textarea id="nsc-notes-${e(st.id)}" rows="3" ${_canEditSc?'':'readonly'} style="width:100%;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:${_canEditSc?'var(--t1)':'var(--t3)'};resize:vertical;box-sizing:border-box;${_canEditSc?'':'background:var(--card);cursor:default;'}" placeholder="Add notes visible to the team…" ${_canEditSc?`oninput="newScSaveNotes('${e(st.id)}','${e(feat.id)}')"`:''}>${e(st.notes||'')}</textarea>
     </div>`;
   // Render traceability using FC's scRenderLineage — same pattern, same logic, same Link one? CTA
@@ -1026,8 +1128,8 @@ function newScHideRemoveConfirm(){
 function newScConfirmRemoveFromPI(storyId,featId){
   if(typeof canEditSession==='function'&&!canEditSession())return;
   showConfirm(
-    'Remove from PI plan?',
-    'This story will be deselected and removed from your PI Canvas backlog.',
+    'Remove from Release plan?',
+    'This story will be deselected and removed from your Release Canvas backlog.',
     ()=>{
       const feat=scCanvas.find(f=>f.id===featId);
       if(!feat||!feat.stories)return;
@@ -1035,17 +1137,27 @@ function newScConfirmRemoveFromPI(storyId,featId){
       if(st){
         st._inPIPlan=false;
         st._stagedForPI=false;
-        // Remove from PI plan if exists
-        if(typeof piPlan!=='undefined'&&piPlan){
-          if(piPlan.storyAssignments)delete piPlan.storyAssignments[storyId];
-          if(piPlan.backlogStoryIds)piPlan.backlogStoryIds=piPlan.backlogStoryIds.filter(id=>id!==storyId);
+        // Remove from whichever plan owns it (if any), and return it to
+        // the global backlog rather than any plan-scoped field.
+        const _owner=scFindOwningPlan(storyId);
+        if(_owner&&_owner.storyAssignments)delete _owner.storyAssignments[storyId];
+        if(typeof piBacklogStoryIds!=='undefined'&&Array.isArray(piBacklogStoryIds)){
+          piBacklogStoryIds=piBacklogStoryIds.filter(id=>id!==storyId);
         }
         scPiSelectedIds=new Set();
         scCanvas.forEach(f=>{if(f.stories&&f.stories.some(s=>s._stagedForPI))scPiSelectedIds.add(f.id);});
       }
       newScRender();
       if(typeof piCheckStaleness==='function')piCheckStaleness();
-      showToast('Story removed from PI plan.','success');
+      // Item 4 edge case — if a piStatus filter is active, removing this
+      // story may drop it out of the currently-filtered view; a scroll
+      // restore that lands on a shifted/empty list is confusing without
+      // this. Conservative approximation: fires whenever any piStatus
+      // filter is active, not only when THIS card would be hidden by it —
+      // worst case shows the more cautious message when the card would
+      // have stayed visible anyway, never the reverse.
+      const _filterActive=Array.isArray(newScFilter.piStatus)&&newScFilter.piStatus.length>0;
+      showToast(_filterActive?'Removed — filtered out of current view.':'Story removed from release plan.','success');
       // v8.146 fix: confirmed missing entirely. PI-staging state only —
       // deliberately no live-edit mark, matching the existing convention
       // that selection/staging state isn't live-synced (same as
@@ -1065,10 +1177,12 @@ function newScDoRemoveStory(storyId,featId){
   st._hiddenFromSC=true;
   st._inSC=false;
   st._stagedForPI=false;
-  // Clean PI plan
-  if(typeof piPlan!=='undefined'&&piPlan){
-    if(piPlan.storyAssignments)delete piPlan.storyAssignments[storyId];
-    if(piPlan.backlogStoryIds)piPlan.backlogStoryIds=piPlan.backlogStoryIds.filter(id=>id!==storyId);
+  // Clean PI plan - resolve the owning plan (if any) and strip the story
+  // from the global backlog too, never a plan-scoped field.
+  const _owner=scFindOwningPlan(storyId);
+  if(_owner&&_owner.storyAssignments)delete _owner.storyAssignments[storyId];
+  if(typeof piBacklogStoryIds!=='undefined'&&Array.isArray(piBacklogStoryIds)){
+    piBacklogStoryIds=piBacklogStoryIds.filter(id=>id!==storyId);
   }
   if(typeof scPiSelectedIds!=='undefined'){
     scPiSelectedIds=new Set();
@@ -1098,16 +1212,19 @@ function newScDeleteStoryById(storyId,featId){
   if(!st)return;
   const isInPI=!!st._inPIPlan;
   const warningMsg=isInPI
-    ?'This story is selected for PI. Removing it will also remove it from your PI Canvas.'
+    ?'This story is selected for the release. Removing it will also remove it from your Release Canvas.'
     :'This action cannot be undone.';
   showConfirm(
     `Remove "${st.title||st.id}"?`,
     warningMsg,
     ()=>{
-      // Remove from PI plan if assigned
-      if(typeof piPlan!=='undefined'&&piPlan){
-        if(piPlan.storyAssignments)delete piPlan.storyAssignments[storyId];
-        if(piPlan.backlogStoryIds)piPlan.backlogStoryIds=piPlan.backlogStoryIds.filter(id=>id!==storyId);
+      // Remove from PI plan if assigned - resolve the owning plan, and
+      // strip the story from the global backlog too, never a plan-scoped
+      // field.
+      const _owner=scFindOwningPlan(storyId);
+      if(_owner&&_owner.storyAssignments)delete _owner.storyAssignments[storyId];
+      if(typeof piBacklogStoryIds!=='undefined'&&Array.isArray(piBacklogStoryIds)){
+        piBacklogStoryIds=piBacklogStoryIds.filter(id=>id!==storyId);
       }
       // Hide from SC only — do not delete from FC (shared data model)
       const _st=feat.stories.find(s=>s.id===storyId);
@@ -1266,12 +1383,80 @@ function newScDoAddStory(){
     sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('sc',featId+_LS_SC_TARGET_SEP+newId); });
   }
 }
+// Shared text<->structure conversion for the non-traditional story-edit
+// fields below — same "one concept per line" convention as the existing
+// Gherkin scenariosToText()/parse-back, just generalized to plain bullet
+// lists, eval-scenario/rubric pairs, and name:threshold metric lines.
+function _nscBulletsToText(arr){return(arr&&arr.length)?arr.join('\n'):'';}
+function _nscTextToBullets(text){return(text||'').split('\n').map(l=>l.trim()).filter(Boolean);}
+function _nscEvalScenariosToText(arr){
+  if(!arr||!arr.length)return'';
+  return arr.map(s=>{
+    let block='Scenario: '+(s.scenario||'')+'\nRubric: '+(s.rubric||'');
+    if(s.category)block+='\nCategory: '+(typeof _scCategoryLabel==='function'?_scCategoryLabel(s.category):s.category);
+    if(s.scoring){
+      block+='\nScoring Method: '+(s.scoring.evaluatorType||'');
+      block+='\nScale: '+(s.scoring.scale||'');
+      if(s.scoring.threshold)block+='\nThreshold: '+s.scoring.threshold;
+      if(s.scoring.rationale)block+='\nRationale: '+s.scoring.rationale;
+    }
+    return block;
+  }).join('\n\n');
+}
+// Category:/Scoring Method:/Scale:/Threshold:/Rationale: are optional lines
+// on top of the existing Scenario:/Rubric: pair, each its own line (not
+// packed onto one delimited "Scoring: a, b, c — d" line) specifically so a
+// comma or hyphen inside a hand-typed or LLM-generated threshold/rationale
+// can never be mistaken for a field separator. Omitting every one of the
+// scoring sub-fields (or the Category line) leaves that field genuinely
+// absent — not a defaulted value — so a legacy, pre-categorization entry
+// round-trips with no stray badge. Every raw value is piped through the
+// same _scNormalizeRubricCategory()/_scNormalizeScoring() (feature-canvas.js)
+// used at generation time, so a typo degrades the same defensive way
+// instead of crashing or silently keeping garbage. A continuation line that
+// matches none of the field prefixes is always appended to whichever field
+// was last matched — never silently dropped, for any field.
+const _nscEvalFieldPrefixes=[['scenario',/^Scenario:\s*/i],['rubric',/^Rubric:\s*/i],['category',/^Category:\s*/i],['method',/^Scoring Method:\s*/i],['scale',/^Scale:\s*/i],['threshold',/^Threshold:\s*/i],['rationale',/^Rationale:\s*/i]];
+function _nscTextToEvalScenarios(text){
+  if(!text||!text.trim())return[];
+  return text.trim().split(/\n{2,}/).map(block=>{
+    const lines=block.split('\n').map(l=>l.trim()).filter(Boolean);
+    const fields={scenario:'',rubric:'',category:'',method:'',scale:'',threshold:'',rationale:''};
+    let last='scenario';
+    lines.forEach(l=>{
+      const hit=_nscEvalFieldPrefixes.find(p=>p[1].test(l));
+      if(hit){last=hit[0];fields[last]=l.replace(hit[1],'');}
+      else{fields[last]=fields[last]?fields[last]+' '+l:l;}
+    });
+    const out={scenario:fields.scenario,rubric:fields.rubric};
+    if(fields.category&&typeof _scNormalizeRubricCategory==='function')out.category=_scNormalizeRubricCategory(fields.category);
+    if((fields.method||fields.scale||fields.threshold||fields.rationale)&&typeof _scNormalizeScoring==='function'){
+      out.scoring=_scNormalizeScoring({evaluator_type:fields.method,scale:fields.scale,threshold:fields.threshold,rationale:fields.rationale});
+    }
+    return out;
+  }).filter(s=>s.scenario||s.rubric);
+}
+function _nscMetricsToText(metrics){
+  if(!metrics||!metrics.length)return'';
+  return metrics.map(m=>(m.name||'')+': '+(m.threshold||'')).join('\n');
+}
+function _nscTextToMetrics(text){
+  if(!text||!text.trim())return[];
+  return text.trim().split('\n').map(l=>l.trim()).filter(Boolean).map(l=>{
+    const idx=l.lastIndexOf(':'); // last, not first — a metric name can itself contain a colon (e.g. "Ratio (A:B)")
+    if(idx===-1)return{name:l,threshold:''};
+    return{name:l.slice(0,idx).trim(),threshold:l.slice(idx+1).trim()};
+  });
+}
+
 function newScShowEditStoryModal(storyId,featId){
   if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(f=>f.id===featId);
   if(!feat||!feat.stories)return;
   const st=feat.stories.find(s=>s.id===storyId);
   if(!st)return;
+  const storyType=st.storyType||'traditional';
+  const d=st.detail||{};
   // Convert structured scenarios to Gherkin text for editing
   function scenariosToText(scenarios){
     if(!scenarios||!scenarios.length)return '';
@@ -1286,19 +1471,52 @@ function newScShowEditStoryModal(storyId,featId){
     }).join('\n\n');
   }
   const acText=scenariosToText(st.scenarios||[]);
+  const lbl=(text,opt)=>`<label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">${text} ${opt?'<span style="font-size:9px;color:var(--label);font-weight:400;">(optional)</span>':'<span style="color:var(--red);">*</span>'}</label>`;
+  const ta=(id,rows,val,placeholder,required)=>`<textarea id="${id}" rows="${rows}" ${placeholder?`placeholder="${placeholder}"`:''} ${required?'oninput="newScValidateEditStory()"':''} style="width:100%;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);resize:vertical;box-sizing:border-box;line-height:1.6;">${e(val)}</textarea>`;
+  let bodyFields;
+  if(storyType==='ai_feature'){
+    bodyFields=`
+      <div>${lbl('Outcome')}${ta('nsc-edit-outcome',3,d.outcome||'','',true)}</div>
+      <div>${lbl('Behavior Expectations',true)}${ta('nsc-edit-behavior',3,_nscBulletsToText(d.behaviorExpectations),'One expectation per line')}</div>
+      <div>${lbl('Eval Scenarios &amp; Rubrics',true)}${ta('nsc-edit-evals',9,_nscEvalScenariosToText(d.evalScenarios),'Scenario: …&#10;Rubric: …&#10;Category: Groundedness (optional)&#10;Scoring Method: llm_judge (optional)&#10;Scale: 0-1&#10;Threshold: &gt;= 0.7&#10;Rationale: …')}</div>
+      <div style="display:flex;gap:8px;">
+        <div style="flex:2;">${lbl('Quality Bar metrics',true)}${ta('nsc-edit-metrics',3,_nscMetricsToText(d.qualityBar&&d.qualityBar.metrics),'Task success rate: &gt;= 90%')}</div>
+        <div style="flex:1;">${lbl('Rerun trigger',true)}${ta('nsc-edit-rerun',3,(d.qualityBar&&d.qualityBar.rerunTrigger)||'')}</div>
+      </div>`;
+  } else if(storyType==='agentic'){
+    bodyFields=`
+      <div>${lbl('Goal')}${ta('nsc-edit-goal',3,d.goal||'','',true)}</div>
+      <div>${lbl('Decision Rights',true)}${ta('nsc-edit-decision-rights',3,_nscBulletsToText(d.decisionRights),'One per line')}</div>
+      <div>${lbl('Guardrails',true)}${ta('nsc-edit-guardrails',3,_nscBulletsToText(d.guardrails),'One per line')}</div>
+      <div style="display:flex;gap:8px;">
+        <div style="flex:1;">${lbl('Escalation triggers',true)}${ta('nsc-edit-esc-triggers',3,_nscBulletsToText((d.escalation||{}).triggers),'One per line')}</div>
+        <div style="flex:1;">${lbl('Handoff includes',true)}${ta('nsc-edit-esc-handoff',3,_nscBulletsToText((d.escalation||{}).handoff),'One per line')}</div>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <div style="flex:2;">${lbl('Acceptance Envelope metrics',true)}${ta('nsc-edit-metrics',3,_nscMetricsToText(d.acceptanceEnvelope&&d.acceptanceEnvelope.metrics),'Name: Threshold, one per line')}</div>
+        <div style="flex:1;">${lbl('Rerun trigger',true)}${ta('nsc-edit-rerun',3,(d.acceptanceEnvelope&&d.acceptanceEnvelope.rerunTrigger)||'')}</div>
+      </div>
+      <div>${lbl('Acceptance Envelope rubrics',true)}${ta('nsc-edit-ae-rubrics',8,_nscEvalScenariosToText(d.acceptanceEnvelope&&d.acceptanceEnvelope.rubrics),'Scenario: a judgment-call situation the agent may face&#10;Rubric: what a sound decision looks like&#10;Category: Accuracy (optional)&#10;Scoring Method: llm_judge (optional)&#10;Scale: 0-1&#10;Threshold: &gt;= 0.7&#10;Rationale: …')}</div>`;
+  } else {
+    bodyFields=`
+      <div>${lbl('Statement')}<textarea id="nsc-edit-stmt" rows="3" oninput="newScValidateEditStory()" style="width:100%;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);resize:none;box-sizing:border-box;">${e(st.statement||'')}</textarea></div>
+      <div>${lbl('Acceptance Criteria',true)}<textarea id="nsc-edit-ac" rows="6" placeholder="Scenario: …&#10;Given …&#10;When …&#10;Then …" style="width:100%;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);resize:vertical;box-sizing:border-box;line-height:1.6;">${e(acText)}</textarea></div>`;
+  }
   // Build feature options
   const featOpts=scCanvas.map(f=>`<option value="${e(f.id)}"${f.id===featId?' selected':''}>${e(f.name)}</option>`).join('');
+  const typeTag=scStoryTypeBadge(storyType,{size:9,extraStyle:'margin-left:5px;'});
   const overlay=document.createElement('div');
   overlay.className='modal-overlay';
   overlay.id='nsc-edit-story-overlay';
+  overlay.dataset.storyType=storyType;
   overlay.innerHTML=`<div class="modal" style="max-width:500px;position:relative;">
     <button onclick="document.getElementById('nsc-edit-story-overlay').remove()" style="position:absolute;top:12px;right:12px;background:none;border:none;cursor:pointer;padding:3px;color:var(--t3);display:flex;align-items:center;border-radius:4px;z-index:1;" title="Close">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
     </button>
     <div style="padding:16px 44px 14px 16px;border-bottom:0.5px solid var(--divider);">
-      <div style="font-size:13px;font-weight:500;color:var(--t1);">Edit Story <span style="font-size:10px;color:var(--label);font-weight:400;">${e(st.id)}</span></div>
+      <div style="font-size:13px;font-weight:500;color:var(--t1);">Edit Story <span style="font-size:10px;color:var(--label);font-weight:400;">${e(st.id)}</span>${typeTag}</div>
     </div>
-    <div style="display:flex;flex-direction:column;gap:10px;padding:14px 16px 4px;">
+    <div style="display:flex;flex-direction:column;gap:10px;padding:14px 16px 4px;max-height:60vh;overflow-y:auto;">
       <div>
         <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Feature</label>
         <select id="nsc-edit-feat" style="width:100%;height:30px;border:1px solid var(--divider);border-radius:5px;padding:0 8px;font-size:11px;font-family:var(--font);color:var(--t1);">${featOpts}</select>
@@ -1307,14 +1525,7 @@ function newScShowEditStoryModal(storyId,featId){
         <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Title <span style="color:var(--red);">*</span></label>
         <input type="text" id="nsc-edit-title" value="${e(st.title||'')}" oninput="newScValidateEditStory()" style="width:100%;height:30px;border:1px solid var(--divider);border-radius:5px;padding:0 8px;font-size:11px;font-family:var(--font);color:var(--t1);box-sizing:border-box;"/>
       </div>
-      <div>
-        <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Statement <span style="color:var(--red);">*</span></label>
-        <textarea id="nsc-edit-stmt" rows="3" oninput="newScValidateEditStory()" style="width:100%;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);resize:none;box-sizing:border-box;">${e(st.statement||'')}</textarea>
-      </div>
-      <div>
-        <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Acceptance Criteria <span style="font-size:9px;color:var(--label);font-weight:400;">(optional)</span></label>
-        <textarea id="nsc-edit-ac" rows="6" placeholder="Scenario: …&#10;Given …&#10;When …&#10;Then …" style="width:100%;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);resize:vertical;box-sizing:border-box;line-height:1.6;">${e(acText)}</textarea>
-      </div>
+      ${bodyFields}
       <div style="display:flex;gap:8px;">
         <div style="flex:1;">
           <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Priority</label>
@@ -1353,10 +1564,13 @@ function newScShowEditStoryModal(storyId,featId){
 }
 
 function newScValidateEditStory(){
+  const overlay=document.getElementById('nsc-edit-story-overlay');
+  const storyType=(overlay&&overlay.dataset.storyType)||'traditional';
   const title=document.getElementById('nsc-edit-title');
-  const stmt=document.getElementById('nsc-edit-stmt');
   const btn=document.getElementById('nsc-edit-story-submit');
-  if(btn)btn.disabled=!(title&&title.value.trim()&&stmt&&stmt.value.trim());
+  const primaryId=storyType==='ai_feature'?'nsc-edit-outcome':storyType==='agentic'?'nsc-edit-goal':'nsc-edit-stmt';
+  const primary=document.getElementById(primaryId);
+  if(btn)btn.disabled=!(title&&title.value.trim()&&primary&&primary.value.trim());
 }
 
 function newScDoEditStory(storyId,origFeatId){
@@ -1364,39 +1578,74 @@ function newScDoEditStory(storyId,origFeatId){
   if(!origFeat||!origFeat.stories)return;
   const st=origFeat.stories.find(s=>s.id===storyId);
   if(!st)return;
+  const storyType=st.storyType||'traditional';
   const title=(document.getElementById('nsc-edit-title')||{}).value||'';
-  const stmt=(document.getElementById('nsc-edit-stmt')||{}).value||'';
   const priority=(document.getElementById('nsc-edit-priority')||{}).value||'';
   const ptsRaw=(document.getElementById('nsc-edit-pts')||{}).value;
-  const acRaw=(document.getElementById('nsc-edit-ac')||{}).value||'';
   const newFeatId=(document.getElementById('nsc-edit-feat')||{}).value||origFeatId;
-  if(!title.trim()||!stmt.trim())return;
+  if(!title.trim())return;
+  if(storyType==='ai_feature'){
+    const outcome=(document.getElementById('nsc-edit-outcome')||{}).value||'';
+    if(!outcome.trim())return;
+    st.detail={
+      outcome:outcome.trim(),
+      behaviorExpectations:_nscTextToBullets((document.getElementById('nsc-edit-behavior')||{}).value),
+      evalScenarios:_nscTextToEvalScenarios((document.getElementById('nsc-edit-evals')||{}).value),
+      qualityBar:{
+        metrics:_nscTextToMetrics((document.getElementById('nsc-edit-metrics')||{}).value),
+        rerunTrigger:((document.getElementById('nsc-edit-rerun')||{}).value||'').trim()
+      }
+    };
+  } else if(storyType==='agentic'){
+    const goal=(document.getElementById('nsc-edit-goal')||{}).value||'';
+    if(!goal.trim())return;
+    st.detail={
+      goal:goal.trim(),
+      decisionRights:_nscTextToBullets((document.getElementById('nsc-edit-decision-rights')||{}).value),
+      guardrails:_nscTextToBullets((document.getElementById('nsc-edit-guardrails')||{}).value),
+      escalation:{
+        triggers:_nscTextToBullets((document.getElementById('nsc-edit-esc-triggers')||{}).value),
+        handoff:_nscTextToBullets((document.getElementById('nsc-edit-esc-handoff')||{}).value)
+      },
+      acceptanceEnvelope:{
+        metrics:_nscTextToMetrics((document.getElementById('nsc-edit-metrics')||{}).value),
+        rubrics:_nscTextToEvalScenarios((document.getElementById('nsc-edit-ae-rubrics')||{}).value),
+        rerunTrigger:((document.getElementById('nsc-edit-rerun')||{}).value||'').trim()
+      }
+    };
+  } else {
+    const stmt=(document.getElementById('nsc-edit-stmt')||{}).value||'';
+    if(!stmt.trim())return;
+    st.statement=stmt.trim();
+    const acRaw=(document.getElementById('nsc-edit-ac')||{}).value||'';
+    // Parse AC text back into structured scenarios
+    if(acRaw.trim()){
+      const blocks=acRaw.trim().split(/\n{2,}/);
+      st.scenarios=blocks.map(block=>{
+        const lines=block.split('\n').map(l=>l.trim()).filter(Boolean);
+        const sc={name:'',given:'',when:'',then:'',and:''};
+        let lastField='name';
+        lines.forEach(l=>{
+          if(/^Scenario:/i.test(l)){sc.name=l.replace(/^Scenario:\s*/i,'');lastField='name';}
+          else if(/^Given/i.test(l)){sc.given=l.replace(/^Given\s*/i,'');lastField='given';}
+          else if(/^When/i.test(l)){sc.when=l.replace(/^When\s*/i,'');lastField='when';}
+          else if(/^Then/i.test(l)){sc.then=l.replace(/^Then\s*/i,'');lastField='then';}
+          else if(/^And/i.test(l)){sc.and=l.replace(/^And\s*/i,'');lastField='and';}
+          else{
+            // Unmatched line — append to last matched field
+            if(sc[lastField])sc[lastField]+=' '+l;
+            else sc[lastField]=l;
+          }
+        });
+        return sc;
+      });
+    } else {
+      st.scenarios=[];
+    }
+  }
   st.title=title.trim();
-  st.statement=stmt.trim();
   st.priority=priority||null;
   st.points=ptsRaw?parseInt(ptsRaw):null;
-  // Parse AC text back into structured scenarios
-  if(acRaw.trim()){
-    const blocks=acRaw.trim().split(/\n{2,}/);
-    st.scenarios=blocks.map(block=>{
-      const lines=block.split('\n').map(l=>l.trim()).filter(Boolean);
-      const sc={name:'',given:'',when:'',then:'',and:''};
-      let lastField='name';
-      lines.forEach(l=>{
-        if(/^Scenario:/i.test(l)){sc.name=l.replace(/^Scenario:\s*/i,'');lastField='name';}
-        else if(/^Given/i.test(l)){sc.given=l.replace(/^Given\s*/i,'');lastField='given';}
-        else if(/^When/i.test(l)){sc.when=l.replace(/^When\s*/i,'');lastField='when';}
-        else if(/^Then/i.test(l)){sc.then=l.replace(/^Then\s*/i,'');lastField='then';}
-        else if(/^And/i.test(l)){sc.and=l.replace(/^And\s*/i,'');lastField='and';}
-        else{
-          // Unmatched line — append to last matched field
-          if(sc[lastField])sc[lastField]+=' '+l;
-          else sc[lastField]=l;
-        }
-      });
-      return sc;
-    });
-  }
   // Feature reassignment
   if(newFeatId!==origFeatId){
     const newFeat=scCanvas.find(f=>f.id===newFeatId);

@@ -14,7 +14,8 @@ function piSyncExportBtn(){
     '<i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export';
 }
 async function buildAndDownloadPIDocx(){
-  if(!piPlan){showToast('Generate a PI plan first.','info');return;}
+  const piPlan=(typeof piGetActivePlan==='function')?piGetActivePlan():null;
+  if(!piPlan){showToast('Generate a release plan first.','info');return;}
   if(piExportInFlight)return;
   piExportInFlight=true;piSyncExportBtn();
   try{
@@ -84,13 +85,13 @@ async function buildAndDownloadPIDocx(){
 
     // ── Section 1 — PI at a Glance ──
     const s1=[
-      h2('1. PI at a Glance'),
+      h2('1. Release at a Glance'),
       body('Product: '+productName+(industry?' · '+industry:'')),
-      body('PI: '+piPlan.name+' · '+piPlan.sprintCount+' sprints · '+piPlan.sprintDuration+' days each'),
+      body('Release: '+piPlan.name+' · '+piPlan.sprintCount+' sprints · '+piPlan.sprintDuration+' days each'),
       gap(20),
     ];
     if(piGoal){
-      s1.push(new Paragraph({spacing:{before:0,after:20},children:[new TextRun({text:'PI Goal:',font:'Arial',size:20,bold:true,color:NAVY})]}));
+      s1.push(new Paragraph({spacing:{before:0,after:20},children:[new TextRun({text:'Release Goal:',font:'Arial',size:20,bold:true,color:NAVY})]}));
       s1.push(body(piGoal));
       s1.push(gap(10));
     }
@@ -152,7 +153,7 @@ async function buildAndDownloadPIDocx(){
     const deps=piPlan.dependencies||[];
     const extDeps=piPlan.externalDeps||[];
     if(deps.length===0&&extDeps.length===0){
-      s3.push(body('No dependencies declared for this PI.'));
+      s3.push(body('No dependencies declared for this release.'));
     } else {
       if(deps.length>0){
         s3.push(h3('Internal dependencies'));
@@ -161,9 +162,9 @@ async function buildAndDownloadPIDocx(){
           const fromStory=piFindStory(d.fromId);const toStory=piFindStory(d.toId);
           const fromSprint=(piPlan.storyAssignments[d.fromId]||{}).sprint;const toSprint=(piPlan.storyAssignments[d.toId]||{}).sprint;
           depRows.push(new TableRow({children:[
-            cell((fromStory&&fromStory.statement||d.fromId||'').substring(0,60),3600),
+            cell((fromStory&&(fromStory.statement||fromStory.title)||d.fromId||'').substring(0,60),3600),
             cell(fromSprint?'S'+fromSprint:'—',1000),cell('blocks',600,null,true),
-            cell((toStory&&toStory.statement||d.toId||'').substring(0,60),3600),
+            cell((toStory&&(toStory.statement||toStory.title)||d.toId||'').substring(0,60),3600),
             cell(toSprint?'S'+toSprint:'—',1000),cell(d.source||'AI inferred',1560)
           ]}));
         });
@@ -175,7 +176,7 @@ async function buildAndDownloadPIDocx(){
         const extRows=[new TableRow({children:[hcell('Story',4800),hcell('Sprint',1200),hcell('External dependency',5360)]})];
         extDeps.forEach(d=>{
           const story=piFindStory(d.storyId);const sprint=(piPlan.storyAssignments[d.storyId]||{}).sprint;
-          extRows.push(new TableRow({children:[cell((story&&story.statement||d.storyId||'').substring(0,60),4800),cell(sprint?'S'+sprint:'—',1200),cell(d.description||'',5360)]}));
+          extRows.push(new TableRow({children:[cell((story&&(story.statement||story.title)||d.storyId||'').substring(0,60),4800),cell(sprint?'S'+sprint:'—',1200),cell(d.description||'',5360)]}));
         });
         s3.push(new Table({width:{size:11360,type:WidthType.DXA},columnWidths:[4800,1200,5360],rows:extRows}));
       }
@@ -239,7 +240,7 @@ async function buildAndDownloadPIDocx(){
           return !!(_pv&&_pv.generated&&_pv.designBrief);
         });
       if(protoFeats.length===0){
-        s5.push(body('No prototypes have been generated for features in this PI plan.'));
+        s5.push(body('No prototypes have been generated for features in this release plan.'));
       } else {
         // Lazy-load html2canvas once, reused for every feature's capture
         let h2cLoaded=false;
@@ -284,13 +285,17 @@ async function buildAndDownloadPIDocx(){
         }
       }
     } else {
-      s5.push(body('No prototypes have been generated for features in this PI plan.'));
+      s5.push(body('No prototypes have been generated for features in this release plan.'));
     }
     s5.push(new Paragraph({children:[new PageBreak()]}));
 
     // ── Section 6 — Unplanned Backlog ──
     const s6=[h2('6. Unplanned Backlog')];
-    const backlogIds=piPlan.backlogStoryIds||[];
+    // backlogNotes is keyed by exactly the story ids that didn't fit this
+    // plan's last generation - the plan object itself no longer carries a
+    // separate backlogStoryIds field, since there is only one shared,
+    // global backlog tray in this app now (piBacklogStoryIds).
+    const backlogIds=Object.keys(piPlan.backlogNotes||{});
     if(backlogIds.length===0){
       s6.push(body('All stories are assigned to a sprint.'));
     } else {
@@ -310,7 +315,7 @@ async function buildAndDownloadPIDocx(){
       s7.push(h2('7. Story Notes'));
       notedStories.forEach(([sid,asgn])=>{
         const story=piFindStory(sid);
-        s7.push(new Paragraph({spacing:{before:120,after:6},children:[new TextRun({text:(story&&story.statement||sid).substring(0,80),font:'Arial',size:18,bold:true,color:GREY})]}));
+        s7.push(new Paragraph({spacing:{before:120,after:6},children:[new TextRun({text:(story&&(story.statement||story.title)||sid).substring(0,80),font:'Arial',size:18,bold:true,color:GREY})]}));
         s7.push(body(asgn.note));
         s7.push(gap(10));
       });
@@ -327,15 +332,15 @@ async function buildAndDownloadPIDocx(){
       sections:[{
         properties:{page:{size:{width:16838,height:11906},margin:{top:1008,right:1008,bottom:1008,left:1008}}},
         children:[
-          new Paragraph({spacing:{before:0,after:20},children:[new TextRun({text:(typeof getOrgName==='function'&&getOrgName()?getOrgName()+' · ':'')+'AI PM Toolkit',font:'Arial',size:18,color:GREY})]}),
-          new Paragraph({spacing:{before:0,after:10},children:[new TextRun({text:piPlan.name+' — PI Plan',font:'Arial',size:40,bold:true,color:NAVY})]}),
+          new Paragraph({spacing:{before:0,after:20},children:[new TextRun({text:(typeof getOrgName==='function'&&getOrgName()?getOrgName()+' · ':'')+APP_NAME,font:'Arial',size:18,color:GREY})]}),
+          new Paragraph({spacing:{before:0,after:10},children:[new TextRun({text:piPlan.name+' — Release Plan',font:'Arial',size:40,bold:true,color:NAVY})]}),
           new Paragraph({spacing:{before:0,after:10},children:[new TextRun({text:productName+' · '+new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}),font:'Arial',size:22,color:GREY})]}),
           gap(20),new Paragraph({children:[new PageBreak()]}),
           ...s1,...s2,...s3,...s4,...s5,...s6,...s7
         ]
       }]
     });
-    const fname=(piPlan.name||'PI-Plan').replace(/\s+/g,'-')+'-'+productName.replace(/\s+/g,'-')+'.docx';
+    const fname=(piPlan.name||'Release-Plan').replace(/\s+/g,'-')+'-'+productName.replace(/\s+/g,'-')+'.docx';
     const blob=await Packer.toBlob(doc);
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');
@@ -343,7 +348,7 @@ async function buildAndDownloadPIDocx(){
     document.body.appendChild(a);a.click();document.body.removeChild(a);
     URL.revokeObjectURL(url);
   }catch(err){
-    showToast('PI export failed: '+err.message,'error');
+    showToast('Release export failed: '+err.message,'error');
     console.error('PI DOCX error:',err);
   }finally{
     piExportInFlight=false;piSyncExportBtn();

@@ -142,7 +142,7 @@ function formatOutcomeUnit(unit,customLabel){
 // feature-generation response (spec §6.5 Finding J).
 function normalizeAIHypothesis(raw){
   if(!raw||typeof raw!=='object')return null;
-  const metric=(raw.metric||'').toString().trim().slice(0,60);
+  const metric=(raw.metric||'').toString().trim();
   if(!metric)return null;
   const unit=OUTCOME_HYP_UNITS.includes(raw.unit)?raw.unit:'custom';
   const customLabel=unit==='custom'?(raw.unit||'').toString().trim().slice(0,20):'';
@@ -160,34 +160,51 @@ function normalizeAIHypothesis(raw){
 // END Outcome Verification Loop shared helpers
 // ══════════════════════════════════════════════════════════════════════
 
-// ── Add Feature dropdown (C1, v7.84) ──
-// Mirrors ccToggleAddCapDrop's pattern for CC's "Add Capability" dropdown.
-function scToggleAddFeatDrop(evt){
-  if(evt)evt.stopPropagation();
-  const drop=document.getElementById('sc-addfeat-drop');
-  if(!drop)return;
-  const isOpen=drop.classList.contains('open');
-  
-  if(isOpen){
-    drop.classList.remove('open');
-    document.removeEventListener('mousedown',_scAddFeatDropOutside);
-  } else {
-    drop.classList.add('open');
-    setTimeout(()=>document.addEventListener('mousedown',_scAddFeatDropOutside),0);
+// ── Toolbar actions kebab (v9.20) ──
+// Consolidates the toolbar's standalone "Add Feature" and "Export" buttons
+// into a single .tm-dots kebab, using the generic _uiRowMenuToggle()/
+// _uiRowMenuClose() mechanics (utils.js) already proven in Team Management,
+// PI Planning and Outcome Pulse. "Add Feature" drills in to the same two
+// options scShowAddFeatureModal()/scShowUploadFeatModal() already power,
+// replacing the popover's own content in place (same menuEl) rather than
+// opening a side flyout - done by writing directly to _uiRowMenuOpen.menuEl
+// instead of calling _uiRowMenuToggle again (which would just close it,
+// since re-toggling the same trigger is a close).
+function scTbKebabTopHtml(){
+  const canEdit=(typeof canEditSession!=='function')||canEditSession();
+  const addFeatRow=canEdit
+    // v9.25.03 — dropped the <span> wrapper around icon+text: with
+    // .tm-menu-item-expand's justify-content:space-between removed (see
+    // 20-team-management.css), the span is no longer needed to protect
+    // icon-text spacing from space-between, and kept it inconsistent with
+    // this same menu's own Export row and CC's Add Capability row (all
+    // three now share flat icon/text/chevron markup and the same 8px gap).
+    ?'<div class="tm-menu-item tm-menu-item-expand" role="menuitem" tabindex="-1" onclick="event.stopPropagation();scTbKebabDrillAddFeature()"><i class="ti ti-plus" aria-hidden="true"></i> Add Feature <i class="ti ti-chevron-right" aria-hidden="true"></i></div>'
+    :'';
+  const exportDisabled=scCanvas.length===0||fcExportInFlight;
+  const exportAttrs=exportDisabled?' aria-disabled="true" tabindex="-1" style="opacity:0.5;cursor:not-allowed;"':' tabindex="-1"';
+  const exportClick=exportDisabled?'':'_uiRowMenuClose();scExportAll()';
+  const exportIcon=fcExportInFlight?'<i class="ti ti-loader-2" style="font-size:12px;animation:spin 1s linear infinite;" aria-hidden="true"></i>':'<i class="ti ti-download" aria-hidden="true"></i>';
+  const exportLabel=fcExportInFlight?'Exporting…':'Export';
+  const exportRow='<div class="tm-menu-item" role="menuitem"'+exportAttrs+' onclick="'+exportClick+'">'+exportIcon+' '+exportLabel+'</div>';
+  return '<div class="tm-menu-static" role="menu">'+addFeatRow+exportRow+'</div>';
+}
+function scToggleTbKebabMenu(triggerEl){
+  _uiRowMenuToggle(triggerEl,scTbKebabTopHtml());
+}
+function scTbKebabShowTop(){
+  if(typeof _uiRowMenuOpen!=='undefined'&&_uiRowMenuOpen&&_uiRowMenuOpen.menuEl){
+    _uiRowMenuOpen.menuEl.innerHTML=scTbKebabTopHtml();
   }
 }
-function scCloseAddFeatDrop(){
-  const drop=document.getElementById('sc-addfeat-drop');
-  if(drop)drop.classList.remove('open');
-  document.removeEventListener('mousedown',_scAddFeatDropOutside);
-}
-function _scAddFeatDropOutside(e){
-  const drop=document.getElementById('sc-addfeat-drop');
-  if(!drop){document.removeEventListener('mousedown',_scAddFeatDropOutside);return;}
-  if(!drop.contains(e.target)){
-    drop.classList.remove('open');
-    document.removeEventListener('mousedown',_scAddFeatDropOutside);
-  }
+function scTbKebabDrillAddFeature(){
+  if(typeof _uiRowMenuOpen==='undefined'||!_uiRowMenuOpen||!_uiRowMenuOpen.menuEl)return;
+  _uiRowMenuOpen.menuEl.innerHTML=
+    '<div class="tm-submenu-standalone" role="menu">'
+    +'<div class="tm-submenu-back" onclick="event.stopPropagation();scTbKebabShowTop()"><i class="ti ti-chevron-left" aria-hidden="true"></i> Add Feature</div>'
+    +'<div class="cc-addcap-opt" role="menuitem" onclick="_uiRowMenuClose();scShowAddFeatureModal()"><i class="ti ti-pencil" aria-hidden="true"></i> Single Feature</div>'
+    +'<div class="cc-addcap-opt" role="menuitem" onclick="_uiRowMenuClose();scShowUploadFeatModal()"><i class="ti ti-upload" aria-hidden="true"></i> Upload from File</div>'
+    +'</div>';
 }
 
 let scPanelLinkingMetric=false;
@@ -209,7 +226,7 @@ function fcRenderCapNav(){
   }
 
   if(!scCanvas.length){
-    tree.innerHTML='<div class="sc-cap-nav-empty">No features on canvas yet.<br>Select features from the KPI Tree.</div>';
+    tree.innerHTML='<div class="sc-cap-nav-empty">No features on canvas yet.<br>Select features from the Discovery Map.</div>';
     return;
   }
 
@@ -326,55 +343,6 @@ function scMakeFeatureId(metric,cap,feat){
   return (metric+'|'+cap+'|'+feat).replace(/['"]/g,'');
 }
 
-// ── Toggle feature on/off canvas from cap drawer ──
-// Reads feature data from parent element's data-* attributes — avoids inline string escaping bugs
-function scToggleFeatureFromDrawer(checkEl){
-  const item=checkEl.closest('[data-fid]');
-  if(!item)return;
-  // Outcome Verification Loop (Phase A/B): look up the live hypothesis from
-  // capStore by identity (metric key + cap name + feature name) rather than
-  // serializing a nested object into a data-* attribute — avoids having to
-  // JSON-stringify + escape a whole object into HTML, and stays consistent
-  // with every other field on this element being a flat string. capStore is
-  // the drawer's own live in-memory source, so this lookup is always fresh
-  // at the moment of toggle, never a stale copy.
-  const _hyp=(typeof scFindDrawerFeatureHypothesis==='function')
-    ?scFindDrawerFeatureHypothesis(item.dataset.metric,item.dataset.cap,item.dataset.fname)
-    :null;
-  scToggleFeature(
-    item.dataset.fid,
-    item.dataset.metric,
-    item.dataset.stage,
-    item.dataset.cap,
-    item.dataset.fname,
-    item.dataset.fwhy,
-    checkEl,
-    _hyp
-  );
-}
-
-// ── Outcome Verification Loop: capStore hypothesis lookup for drawer toggle ──
-// capStore is keyed by stageId+'||'+metricName (KPI-linked) or 'pi||'+capName
-// (PI-first) — see PROJECT_MAP.md's capStore structure. This does a linear
-// scan across capStore entries matching on cap name + feature name, since the
-// drawer's data-* attributes don't carry the exact capStore key. Cheap in
-// practice — capStore entries and their feature lists are both small (tens,
-// not thousands, of items) for any real product.
-function scFindDrawerFeatureHypothesis(metric,capName,featName){
-  if(typeof capStore==='undefined'||!capStore)return null;
-  for(const entry of Object.values(capStore)){
-    if(!entry||!entry.capabilities)continue;
-    const cap=entry.capabilities.find(c=>c.name===capName);
-    if(!cap||!cap.featStore)continue;
-    for(const feats of Object.values(cap.featStore)){
-      if(!Array.isArray(feats))continue;
-      const f=feats.find(x=>x.name===featName);
-      if(f&&f.outcomeHypothesis)return f.outcomeHypothesis;
-    }
-  }
-  return null;
-}
-
 function scToggleFeature(fid,metric,stage,cap,fname,fwhy,checkEl,outcomeHypothesis){
   if(typeof canEditSession==='function'&&!canEditSession())return;
   const idx=scCanvas.findIndex(x=>x.id===fid);
@@ -415,8 +383,13 @@ function scToggleFeature(fid,metric,stage,cap,fname,fwhy,checkEl,outcomeHypothes
 }
 
 function scUpdateCapDrawerFooter(){
+  // capability-drawer.js (and its #cap-drawer-footer/#cap-canvas-count-num
+  // markup) was removed as dead code — this function is still called from
+  // several unrelated feature-mutation call sites below, so guard rather
+  // than remove those call sites.
   const footer=document.getElementById('cap-drawer-footer');
   const count=document.getElementById('cap-canvas-count-num');
+  if(!footer||!count)return;
   count.textContent=scCanvas.length;
   footer.style.display=scCanvas.length>0?'flex':'none';
 }
@@ -570,6 +543,18 @@ function scBuildCapBreadcrumb(cap){
   return'<div class="sc-cap-breadcrumb" data-tooltip="'+e(fullPath)+'" id="scbc-'+Math.random().toString(36).slice(2)+'">'+rendered+'</div>';
 }
 
+// Re-fit breadcrumbs on viewport resize, not just on render — without this,
+// truncation set at one width goes stale (either under- or over-truncated)
+// if the user resizes without triggering a card re-render.
+if(typeof window!=='undefined'&&!window._scBreadcrumbResizeWired){
+  window._scBreadcrumbResizeWired=true;
+  var _scBcResizeTimer=null;
+  window.addEventListener('resize',function(){
+    clearTimeout(_scBcResizeTimer);
+    _scBcResizeTimer=setTimeout(function(){scFitBreadcrumbs();},150);
+  });
+}
+
 // Priority truncation: shorten L1 first, then L2, preserve L3
 // Called after render via requestAnimationFrame
 function scFitBreadcrumbs(){
@@ -633,6 +618,15 @@ function fcGetVisibleCanvas(){
       if(fcOriginFilter.has('origin-mi')&&_isMI)return true;
       if(fcOriginFilter.has('origin-diag')&&_isDiag)return true;
       if(fcOriginFilter.has('origin-kpi')&&_isKpi)return true;
+      // §9.1 — "Requirement Agent" origin value: RQ-agnostic (any
+      // intakeBriefId) if the parent alone is checked, else scoped to
+      // whichever RQs are individually checked (same tri-state model as CC).
+      const _wRa=fcOriginFilter.has('origin-ra')||Array.from(fcOriginFilter).some(t=>t.indexOf('origin-ra-rq:')===0);
+      if(_wRa&&f.intakeBriefId){
+        const checkedRqIds=Array.from(fcOriginFilter).filter(t=>t.indexOf('origin-ra-rq:')===0).map(t=>t.slice('origin-ra-rq:'.length));
+        if(checkedRqIds.length)return checkedRqIds.indexOf(f.intakeBriefId)>=0;
+        return fcOriginFilter.has('origin-ra');
+      }
       return false;
     });
   }
@@ -786,7 +780,14 @@ function scBuildOutcomeHypChipHTML(f){
   // all the truncation styling (overflow:hidden, text-overflow:ellipsis,
   // white-space:nowrap, max-width) that used to live directly on
   // .sc-hyp-chip.
-  return`<span class="sc-hyp-chip pgt-tooltip" data-tooltip="${e(tooltipText)}"><span class="sc-hyp-chip-inner"><i class="ti ti-target-arrow" style="font-size:9px;" aria-hidden="true"></i> ${e(label)}</span></span>`;
+  // Adoption Readiness (v9.21, §4.1) — soft, non-blocking amber warning
+  // badge when the carry-forward check (rcApplyHypothesisCarryForward(),
+  // readiness-canvas.js) found no logged prior-release actual. Informational
+  // only — never blocks generation, never requires dismissal.
+  const carryWarn=p._rcNoPriorOutcomeWarning
+    ?`<span class="sc-hyp-carry-warn pgt-tooltip" data-tooltip="No outcome logged for the prior release. Baseline shown below may be outdated. Consider checking Outcome Pulse before confirming."><i class="ti ti-alert-triangle" aria-hidden="true"></i></span>`
+    :'';
+  return`<span class="sc-hyp-chip pgt-tooltip" data-tooltip="${e(tooltipText)}"><span class="sc-hyp-chip-inner"><i class="ti ti-target-arrow" style="font-size:9px;" aria-hidden="true"></i> ${e(label)}</span></span>${carryWarn}`;
 }
 
     h+=`<div class="sc-cards">`;
@@ -845,7 +846,7 @@ function scBuildOutcomeHypChipHTML(f){
       // Origin icon + name
       const isDoc=f.origin==='doc';
       const _scOriginIcon=isDiag?'ti-microscope':isMI?'ti-world-search':isDoc?'ti-file-text':f.origin==='pi'?'ti-clipboard-list':'ti-hierarchy-2';
-      const _scOriginTitle=isDiag?'From Experiment Canvas':isMI?'From Market Intelligence':isDoc?'From Session Document':f.origin==='pi'?'From Custom plan':'From KPI Tree Capability';
+      const _scOriginTitle=isDiag?'From Experiment Canvas':isMI?'From Market Intelligence':isDoc?'From Session Document':f.origin==='pi'?'From Custom plan':'From Discovery Map Capability';
       const _scOriginClass=isDiag?'sc-origin-icon-diag':isMI?'sc-origin-icon-market':isDoc?'sc-origin-icon-doc':f.origin==='pi'?'sc-origin-icon-pi':'sc-origin-icon-kpi';
       h+=`<div class="sc-card-name-row"><span class="sc-origin-icon ${_scOriginClass}" title="${_scOriginTitle}" style="width:14px;height:14px;flex-shrink:0;border-radius:3px;"><i class="ti ${_scOriginIcon}" style="font-size:9px;" aria-hidden="true"></i></span><div class="sc-card-name">${e(f.name)}</div></div>`;
       h+=`<div class="sc-card-why">${e(f.why)}</div>`;
@@ -906,11 +907,10 @@ function scUpdateActionBar(visibleCanvas){
   // can do.
   const _canEditFcBar=(typeof canEditSession!=='function')||canEditSession();
   if(bar)bar.style.display=_canEditFcBar?'':'none';
-  // Add Feature is a static button in index.html, not part of a
-  // dynamically-rendered template — synced here since this function
-  // already runs on every FC render/tab-enter cycle.
-  const addFeatWrap=document.getElementById('sc-add-feat-wrap');
-  if(addFeatWrap)addFeatWrap.style.display=_canEditFcBar?'':'none';
+  // Add Feature/Export now live inside the toolbar's single kebab
+  // (#sc-tb-kebab-wrap, scTbKebabTopHtml()) - that menu is rebuilt fresh
+  // every time it's opened, so edit-permission and disabled state are
+  // resolved there rather than synced onto standalone elements here.
   // Refine bar + Send to Story Canvas — also static elements in index.html,
   // outside sc-action-bar's own scope, synced here for the same reason.
   const refineBar=document.getElementById('sc-refine-bar');
@@ -921,16 +921,11 @@ function scUpdateActionBar(visibleCanvas){
   if(!visibleCanvas)visibleCanvas=scCanvas;
   const total=visibleCanvas.length;
 
-  // v9.08.03 fix: Export lives in its own wrapper (sc-export-wrap-toolbar
-  // in index.html), OUTSIDE sc-action-bar's actual DOM scope — unlike
-  // select-all/info-count/generate-button below, which genuinely are
-  // inside the bar. The previous early return here (before this line)
-  // caused Export to never reach its own enable/disable logic for a
-  // view-only session, leaving it stuck disabled. Export must reflect
-  // "is there anything to export," never edit permission, so this now
-  // runs unconditionally, before any edit-mode branching.
-  const expBtn=document.getElementById('sc-export-btn');
-  if(expBtn&&!fcExportInFlight){expBtn.disabled=total===0;}
+  // v9.08.03 fix (superseded by v9.20's kebab consolidation, kept for the
+  // rationale): Export must reflect "is there anything to export," never
+  // edit permission - scTbKebabTopHtml() re-evaluates that (scCanvas.length)
+  // every time the kebab opens, so no live sync onto a standalone button
+  // is needed here.
 
   if(!_canEditFcBar)return;
   const visibleIds=new Set(visibleCanvas.map(f=>f.id));
@@ -1014,6 +1009,7 @@ function fcToggleFilterDrop(evt){
     document.removeEventListener('mousedown',fcFilterDropOutside);
   } else {
     drop.classList.add('open');
+    _fcRenderOriginRaFilterSlot();
     setTimeout(()=>document.addEventListener('mousedown',fcFilterDropOutside),0);
   }
 }
@@ -1024,6 +1020,65 @@ function fcFilterDropOutside(e){
     drop.classList.remove('open');
     document.removeEventListener('mousedown',fcFilterDropOutside);
   }
+}
+// §9.1 — "Requirement Agent" nested Origin value + per-RQ sub-list. Same
+// tri-state parent/child model as Capability Canvas's §8.2 implementation
+// (ccToggleOriginRaParent()/ccToggleOriginRaChild() in capability-canvas.js)
+// — kept as its own copy here rather than shared code since FC's filter
+// markup is static HTML (index.html's #fc-filter-drop) with a JS-populated
+// slot, not a fully JS-generated popover like CC's.
+let fcOriginRaExpanded=false;
+function _fcFinalizedRaConvs(){
+  return (typeof raConversations!=='undefined'?raConversations:[]).filter(function(c){return c.status==='finalized';});
+}
+function _fcRenderOriginRaFilterSlot(){
+  const slot=document.getElementById('fc-filter-origin-ra-slot');
+  if(!slot)return;
+  const convs=_fcFinalizedRaConvs();
+  if(!convs.length){slot.innerHTML='';return;}
+  const checkedRqTokens=convs.filter(function(c){return fcOriginFilter.has('origin-ra-rq:'+c.id);});
+  const parentChecked=fcOriginFilter.has('origin-ra');
+  // QA issue #5 — always show the RQ sub-list, even with only one finalized
+  // RQ, matching Capability Canvas's identical fix (_ccOriginRaFilterHtml()).
+  const showSubList=fcOriginRaExpanded||parentChecked||checkedRqTokens.length>0;
+  const subListHtml=`<div id="fc-origin-ra-sublist" style="display:${showSubList?'block':'none'};padding-left:20px;border-left:1px dashed var(--divider);margin-left:20px;">`
+    +convs.map(function(c){
+      const cnt=(typeof scCanvas!=='undefined'?scCanvas.filter(f=>f.intakeBriefId===c.id).length:0);
+      const isChecked=fcOriginFilter.has('origin-ra-rq:'+c.id);
+      return `<label class="fc-filter-row" style="font-size:11px;" onclick="event.stopPropagation();"><input type="checkbox" ${isChecked?'checked':''} onchange="fcToggleOriginRaChild('${e(c.id)}')"> ${e(c.rqNumber||'')} &mdash; ${e(c.title||'Untitled')} <span style="margin-left:auto;font-size:9px;color:var(--t3);">${cnt}</span></label>`;
+    }).join('')
+    +`</div>`;
+  slot.innerHTML=`<label class="fc-filter-row" id="fc-origin-ra-row" onclick="event.stopPropagation();fcToggleOriginRaExpand()"><input type="checkbox" id="fc-origin-ra-chk" ${parentChecked?'checked':''} onclick="event.stopPropagation();fcToggleOriginRaParent()"> <i class="ti ti-message-2" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Requirement Agent <i class="ti ti-chevron-${showSubList?'down':'right'}" style="font-size:9px;margin-left:auto;" aria-hidden="true"></i></label>`
+    +subListHtml;
+  const chk=document.getElementById('fc-origin-ra-chk');
+  if(chk)chk.indeterminate=checkedRqTokens.length>0&&checkedRqTokens.length<convs.length;
+}
+function fcToggleOriginRaParent(){
+  const convs=_fcFinalizedRaConvs();
+  if(fcOriginFilter.has('origin-ra')){
+    fcOriginFilter.delete('origin-ra');
+    convs.forEach(function(c){fcOriginFilter.delete('origin-ra-rq:'+c.id);});
+  } else {
+    fcOriginFilter.add('origin-ra');
+    convs.forEach(function(c){fcOriginFilter.add('origin-ra-rq:'+c.id);});
+    fcOriginRaExpanded=true;
+  }
+  fcRenderCanvas();
+  _fcRenderOriginRaFilterSlot();
+}
+function fcToggleOriginRaChild(convId){
+  const tok='origin-ra-rq:'+convId;
+  if(fcOriginFilter.has(tok))fcOriginFilter.delete(tok);else fcOriginFilter.add(tok);
+  const convs=_fcFinalizedRaConvs();
+  const checkedCount=convs.filter(function(c){return fcOriginFilter.has('origin-ra-rq:'+c.id);}).length;
+  if(checkedCount>0&&checkedCount===convs.length)fcOriginFilter.add('origin-ra');
+  else fcOriginFilter.delete('origin-ra');
+  fcRenderCanvas();
+  _fcRenderOriginRaFilterSlot();
+}
+function fcToggleOriginRaExpand(){
+  fcOriginRaExpanded=!fcOriginRaExpanded;
+  _fcRenderOriginRaFilterSlot();
 }
 function fcSetOriginFilter(val){
   if(fcOriginFilter.has(val)){fcOriginFilter.delete(val);}
@@ -1072,6 +1127,8 @@ function fcClearFilter(){
     const el=document.getElementById(id);
     if(el)el.checked=false;
   });
+  fcOriginRaExpanded=false;
+  _fcRenderOriginRaFilterSlot();
   scSelectedIds.clear(); // selection is filter-scoped — same fix as scSetCapFilter/fcSetStoriesFilter
   const btn=document.getElementById('fc-filter-btn');
   if(btn)btn.classList.remove('active');
@@ -1160,6 +1217,16 @@ function scOpenPanel(fid){
   if(scPanelFeatureId===fid){scClosePanel();return;}
   const feat=scCanvas.find(x=>x.id===fid);
   if(!feat)return;
+  // v9.25 — #sc-refine-txt is STATIC HTML (index.html), never destroyed or
+  // rebuilt by any render function here — a different failure mode from
+  // every other surface's textarea. Switching to a different feature's
+  // panel reassigns scPanelFeatureId while the SAME physical textarea node
+  // persists untouched: without this guard, dictation started for the
+  // previous feature would keep running and could get submitted against
+  // the NEWLY active feature via scRefineStories() (which reads
+  // scPanelFeatureId at click time, not at typing time) — silent
+  // misattribution, not just silent loss.
+  voiceStopActive('abort');
   scPanelFeatureId=fid;
   document.getElementById('sc-panel-feat-name').textContent=feat.name;
   // Show selection indicator in panel tag
@@ -1176,7 +1243,18 @@ function scOpenPanel(fid){
   document.getElementById('sc-panel').classList.add('open');
   scRenderPanel(feat);
   scUpdatePanelNav();
+  _scRenderVoiceSlot();
   fcRenderCanvas(); // update active card ring
+}
+
+// v9.25 — populates the static #sc-refine-voice-slot (index.html) with the
+// mic button. Since #sc-refine-txt's row is static HTML, not JS-template-
+// generated, there's no natural render pass to embed voiceButtonHtml()
+// into the way other surfaces do — this runs once per panel-open instead,
+// matching every other surface's own render-time gate check.
+function _scRenderVoiceSlot(){
+  const slot=document.getElementById('sc-refine-voice-slot');
+  if(slot&&typeof voiceButtonHtml==='function')slot.innerHTML=voiceButtonHtml({textareaId:'sc-refine-txt',buttonId:'sc-refine-voice-btn',statusId:'sc-refine-voice-status'});
 }
 
 function scRenderLineage(feat,targetElId){
@@ -1277,7 +1355,7 @@ function scRenderLineage(feat,targetElId){
       <div style="display:flex;align-items:center;gap:5px;margin-bottom:5px;">
         ${dot('#185FA5',false,false)}
         <span class="sc-panel-lineage-key" style="color:#185FA5;width:auto;">${_metricLbl}</span>
-        <span style="font-size:9px;color:var(--t3);">${_isCap?'— pick one from your Discovery Map':'— pick one from your KPI tree'}</span>
+        <span style="font-size:9px;color:var(--t3);">— pick one from your Discovery Map</span>
       </div>
       <div class="sc-panel-lineage-picker">
         <select id="sc-lineage-metric-sel" onchange="document.getElementById('sc-lineage-confirm').disabled=!this.value;">
@@ -1350,6 +1428,181 @@ function scRenderLineage(feat,targetElId){
   <div class="sc-panel-lineage-body">${rows}</div>`;
 }
 
+// `||''` would treat a legitimate numeric 0 threshold (e.g. "guardrail
+// breaches = 0") as missing. Only an actually-missing value falls back.
+function _scNameOrThreshold(v){return v==null?'':String(v);}
+
+// Rubric category classification (ai_feature eval scenarios / agentic
+// acceptance-envelope rubrics) — the stored value is a lowercase slug
+// matching agent-test-kit's own test-cases.json category convention
+// verbatim (test-suite/agents/*/config/test-cases.json), not a Title-Case
+// display string, so this data is a genuine zero-translation head start
+// for whenever that feature is later onboarded into real automated
+// testing. _scCategoryLabel() below renders the PM-friendly form. An
+// unrecognized or missing value falls back to 'general' — it never drops
+// the scenario/rubric entry itself (the exact bug class the storyType
+// normalization fix above exists to prevent).
+const _scRubricCategoryAliases={
+  groundedness:'groundedness',
+  hallucination:'hallucination',hallucinations:'hallucination',
+  accuracy:'accuracy',
+  adversarial:'adversarial','adversarial robustness':'adversarial',
+  'out of context':'out_of_context',outofcontext:'out_of_context','out of scope':'out_of_context',
+  consistency:'consistency','consistency determinism':'consistency',determinism:'consistency',
+  format:'format','instruction following':'format','instruction following format':'format','format compliance':'format',
+  bias:'bias','bias fairness':'bias',fairness:'bias',
+  safety:'safety','safety harmful content':'safety','harmful content':'safety',
+  robustness:'robustness','noisy input':'robustness','robustness to noisy input':'robustness',
+  privacy:'privacy',pii:'privacy','privacy pii':'privacy',
+  completeness:'completeness',coverage:'completeness','completeness coverage':'completeness',
+  tone:'tone',calibration:'tone','tone calibration':'tone',
+  general:'general'
+};
+function _scNormalizeRubricCategory(raw){
+  // Collapse separators BEFORE trimming — otherwise a leading/trailing
+  // separator (e.g. "-Groundedness") collapses to a leading/trailing space
+  // that survives trim-first and fails the exact-match lookup below.
+  const key=String(raw||'').toLowerCase().replace(/[\s_\-\/]+/g,' ').trim();
+  // hasOwnProperty guard, not a bare `[key]||...` lookup — this is a plain
+  // object used as a map, so an input that normalizes to a key already on
+  // Object.prototype (e.g. "constructor") would otherwise resolve through
+  // the prototype chain to a function value instead of falling back.
+  return Object.prototype.hasOwnProperty.call(_scRubricCategoryAliases,key)?_scRubricCategoryAliases[key]:'general';
+}
+const _scCategoryLabels={groundedness:'Groundedness',hallucination:'Hallucination',accuracy:'Accuracy',adversarial:'Adversarial',out_of_context:'Out-of-context',consistency:'Consistency',format:'Format',bias:'Bias',safety:'Safety',robustness:'Robustness',privacy:'Privacy',completeness:'Completeness',tone:'Tone',general:'General'};
+function _scCategoryLabel(category){return _scCategoryLabels[category]||category||'';}
+
+// Scoring recommendation normalization — whitelists against agent-test-kit's
+// own literal evaluatorType/scale vocabulary (test-suite/agents/*/config/
+// rubrics.js) so this data could feed a future export into a real
+// rubrics.js with no translation step. Falls back to the safer generic
+// defaults (llm_judge / scale keyed off the resolved evaluator) rather than
+// dropping anything — same defensive posture as every other normalizer here.
+const _scEvaluatorTypes=['script_diff','llm_judge','toxicity_scan'];
+const _scScales=['binary','0-1'];
+function _scNormalizeScoring(raw){
+  const o=raw||{};
+  const etRaw=String(o.evaluator_type||o.evaluatorType||'').toLowerCase().trim().replace(/[\s\-]+/g,'_');
+  const evaluatorType=_scEvaluatorTypes.includes(etRaw)?etRaw:'llm_judge';
+  // Collapse whitespace around a hyphen (e.g. hand-typed "0 - 1") so it
+  // still matches the literal "0-1" scale value — scaleRaw's own hyphen
+  // (inside "0-1" itself) is never touched by this, only surrounding
+  // whitespace is removed.
+  const scaleRaw=String(o.scale||'').toLowerCase().trim().replace(/\s*-\s*/g,'-');
+  const scale=_scScales.includes(scaleRaw)?scaleRaw:(evaluatorType==='script_diff'?'binary':'0-1');
+  return{evaluatorType,scale,threshold:_scNameOrThreshold(o.threshold),rationale:_scNameOrThreshold(o.rationale)};
+}
+
+// Shared pill renderer — one template for every small colored label pill in
+// this file, so scStoryTypeBadge()/scRubricCategoryBadge() can't drift out
+// of sync with each other on padding/sizing/radius the way two independent
+// hand-written templates eventually do.
+function _scPill(label,opts){
+  opts=opts||{};
+  const size=opts.size||7.5;
+  const border=opts.border?`border:1px solid ${opts.border};`:'';
+  return `<span style="font-weight:700;font-size:${size}px;background:${opts.bg};color:${opts.fg};${border}border-radius:3px;padding:1px 5px;${opts.extraStyle||''}">${label}</span>`;
+}
+
+// Rubric category pill — neutral-colored so it never competes with the
+// story-type pill. font-family is set explicitly since .sc-ac-scenario
+// (styles/08-feature-canvas.css) forces monospace on its ancestor and this
+// must not inherit it.
+function scRubricCategoryBadge(category){
+  if(!category)return'';
+  return _scPill(e(_scCategoryLabel(category)),{bg:'var(--card)',fg:'var(--t3)',border:'var(--divider)',extraStyle:'font-family:var(--font);'});
+}
+
+// Scoring-recommendation line — stores the machine evaluatorType value,
+// translates to a PM-friendly label only here at render time (same
+// store-machine/render-friendly pattern scStoryTypeBadge() uses below).
+const _scScoringMethodLabels={script_diff:'Deterministic check',llm_judge:'AI judge review',toxicity_scan:'Safety/content scan'};
+function _scScoringLine(scoring){
+  if(!scoring)return'';
+  const methodLabel=_scScoringMethodLabels[scoring.evaluatorType]||scoring.evaluatorType||'';
+  const summary=[methodLabel,scoring.scale,scoring.threshold?('threshold '+scoring.threshold):''].filter(Boolean).join(' · ');
+  if(!summary)return'';
+  return `<div style="font-size:9.5px;color:var(--t3);font-family:var(--font);margin-top:2px;">Suggested scoring: ${e(summary)}${scoring.rationale?' — '+e(scoring.rationale):''}</div>`;
+}
+
+// Shared story-type badge pill — single source for the AI FEATURE/AGENTIC
+// label+color mapping so Feature Canvas, Story Canvas's card footer, and
+// its edit-modal title tag can't drift out of sync with each other.
+function scStoryTypeBadge(storyType,opts){
+  if(storyType!=='ai_feature'&&storyType!=='agentic')return'';
+  opts=opts||{};
+  const isAgentic=storyType==='agentic';
+  const label=isAgentic?'AGENTIC':'AI FEATURE';
+  return _scPill(label,{bg:isAgentic?'var(--purple-pale)':'var(--blue-pale)',fg:isAgentic?'var(--purple)':'var(--blue)',size:opts.size,extraStyle:opts.extraStyle});
+}
+
+// Three-tier story classification (traditional / ai_feature / agentic) —
+// shared across Story Canvas and Release Canvas detail panels, same
+// cross-file-helper pattern as scRenderLineage() above. Returns an array
+// of {label, html} fragments rather than one finished block so each caller
+// keeps its own existing label/container chrome (the two screens already
+// style "Story Statement" etc. differently) instead of all converging on
+// one hardcoded look.
+function scGetStorySections(st){
+  const t=st.storyType||'traditional';
+  const bullets=(arr)=>!arr||!arr.length?'<div style="font-size:10px;color:var(--label);font-style:italic;">None specified.</div>'
+    :'<ul style="margin:0;padding-left:16px;font-size:11px;color:var(--t2);line-height:1.6;">'+arr.map(x=>`<li>${e(x)}</li>`).join('')+'</ul>';
+  // Shared scenario+rubric row renderer — used both for ai_feature's
+  // standalone Eval Scenarios section and for rubrics nested inside an
+  // Acceptance Envelope (agentic) alongside its aggregate metrics.
+  // category/scoring are independently optional — a legacy entry (pre-
+  // categorization) has neither and must render with no badge/line at all,
+  // not a 'General' badge (that's only ever applied at normalization time).
+  const rubricRows=(arr)=>(arr&&arr.length)?arr.map(s=>{
+    const _meta=(s.category?`<div style="margin-top:4px;">${scRubricCategoryBadge(s.category)}</div>`:'')+_scScoringLine(s.scoring);
+    return `<div class="sc-ac-scenario"><div style="flex:1;white-space:pre-wrap;font-size:11px;color:var(--t2);">${e(s.scenario||'')}</div><div style="flex:1;white-space:pre-wrap;font-size:10px;color:var(--t3);font-style:italic;margin-top:2px;">Rubric: ${e(s.rubric||'')}</div>${_meta}</div>`;
+  }).join(''):'';
+  const metricsBlock=(m)=>{
+    const o=m||{};const rows=o.metrics||[];
+    let html=(rows.length?rows.map(r=>`<div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;padding:2px 0;"><span>${e(r.name||'')}</span><span style="font-weight:600;flex-shrink:0;">${e(r.threshold||'')}</span></div>`).join('')
+      :'<div style="font-size:10px;color:var(--label);font-style:italic;">No metrics specified.</div>');
+    if(o.rubrics&&o.rubrics.length){
+      html+='<div style="font-size:10px;font-weight:600;color:var(--t2);margin:8px 0 2px;">Rubrics</div>'+rubricRows(o.rubrics);
+    }
+    html+=(o.rerunTrigger?`<div style="font-size:10px;color:var(--t3);margin-top:4px;">Rerun trigger: ${e(o.rerunTrigger)}</div>`:'');
+    return html;
+  };
+  if(t==='ai_feature'){
+    const d=st.detail||{};
+    return[
+      {label:'User Outcome',html:`<div style="font-size:11px;color:var(--t3);line-height:1.5;font-style:italic;">${e(d.outcome||'')}</div>`},
+      {label:'Behavior Expectations',html:bullets(d.behaviorExpectations)},
+      {label:'Eval Scenarios & Rubrics',html:(d.evalScenarios&&d.evalScenarios.length?rubricRows(d.evalScenarios):'<div style="font-size:10px;color:var(--label);font-style:italic;">No eval scenarios.</div>')},
+      {label:'Quality Bar',html:metricsBlock(d.qualityBar)}
+    ];
+  }
+  if(t==='agentic'){
+    const d=st.detail||{};
+    const esc=d.escalation||{};
+    return[
+      {label:'Goal',html:`<div style="font-size:11px;color:var(--t3);line-height:1.5;font-style:italic;">${e(d.goal||'')}</div>`},
+      {label:'Decision Rights',html:bullets(d.decisionRights)},
+      {label:'Guardrails',html:bullets(d.guardrails)},
+      {label:'Escalation',html:'<div style="font-size:10px;font-weight:600;color:var(--t2);margin-bottom:2px;">Triggers</div>'+bullets(esc.triggers)+'<div style="font-size:10px;font-weight:600;color:var(--t2);margin:6px 0 2px;">Handoff includes</div>'+bullets(esc.handoff)},
+      {label:'Acceptance Envelope',html:metricsBlock(d.acceptanceEnvelope)}
+    ];
+  }
+  // traditional — identical output to the previous hardcoded panel blocks
+  const acHtml=(st.scenarios&&st.scenarios.length>0)
+    ?`<div class="sc-ac-block">`+st.scenarios.map((sc)=>{
+        if(typeof sc==='string'){
+          return `<div class="sc-ac-scenario"><div style="flex:1;white-space:pre-wrap;font-size:10px;color:var(--t2);line-height:1.5;">${e(sc)}</div></div>`;
+        }
+        return `<div class="sc-ac-scenario"><div style="flex:1;white-space:pre-wrap;"><span class="sc-ac-kw">Scenario:</span> ${e(sc.name||'')}\n<span class="sc-ac-kw">Given</span> ${e(sc.given||'')}\n<span class="sc-ac-kw">When</span>  ${e(sc.when||'')}\n<span class="sc-ac-kw">Then</span>  ${e(sc.then||'')}${sc.and?`\n<span class="sc-ac-kw">And</span>   ${e(sc.and)}`:''}
+        </div></div>`;
+      }).join('')+`</div>`
+    :'<div style="font-size:10px;color:var(--label);font-style:italic;">No acceptance criteria — generate stories in Feature Canvas to include ACs.</div>';
+  return[
+    {label:'Story Statement',html:`<div style="font-size:11px;color:var(--t3);line-height:1.5;font-style:italic;">${e(st.statement||'')}</div>`},
+    {label:'Acceptance Criteria',html:acHtml}
+  ];
+}
+
 function scToggleLineage(fid){
   scPanelLineageOpen=!scPanelLineageOpen;
   scPanelLinkingMetric=false;
@@ -1361,7 +1614,7 @@ function scShowLinkMetricModal(fid){
   // G3 — no KPI tree guard
   if(typeof gData==='undefined'||!gData||!gData.stages||!gData.stages.length){
     const _isCap=typeof gData!=='undefined'&&gData&&gData.approach==='capability-based';
-    showToast(_isCap?'Generate your Discovery Map first to link a capability.':'Generate your KPI tree first to link a metric.','warn');
+    showToast(_isCap?'Generate your Discovery Map first to link a capability.':'Generate your Discovery Map first to link a metric.','warn');
     return;
   }
   scPanelLinkingMetric=true;
@@ -1425,10 +1678,13 @@ function scConfirmLinkMetric(fid){
   // Update scPiSelectedIds
   if(scPiSelectedIds.has(oldId)){scPiSelectedIds.delete(oldId);scPiSelectedIds.add(newId);}
 
-  // G2 — update piPlan.submittedFeatureIds if present
-  if(typeof piPlan!=='undefined'&&piPlan&&piPlan.submittedFeatureIds){
-    const idx=piPlan.submittedFeatureIds.indexOf(oldId);
-    if(idx>-1)piPlan.submittedFeatureIds[idx]=newId;
+  // G2 — update submittedFeatureIds on every plan that references it
+  if(typeof piPlans!=='undefined'&&Array.isArray(piPlans)){
+    piPlans.forEach(function(_plan){
+      if(!_plan.submittedFeatureIds)return;
+      const idx=_plan.submittedFeatureIds.indexOf(oldId);
+      if(idx>-1)_plan.submittedFeatureIds[idx]=newId;
+    });
   }
 
   // G3 — propagate metric/stage to unlinked sibling features under same cap
@@ -1447,9 +1703,12 @@ function scConfirmLinkMetric(fid){
     if(typeof pcMigrateProtoFeatureId==='function')pcMigrateProtoFeatureId(sibOldId,sib.id);
     if(scSelectedIds.has(sibOldId)){scSelectedIds.delete(sibOldId);scSelectedIds.add(sib.id);}
     if(scPiSelectedIds.has(sibOldId)){scPiSelectedIds.delete(sibOldId);scPiSelectedIds.add(sib.id);}
-    if(typeof piPlan!=='undefined'&&piPlan&&piPlan.submittedFeatureIds){
-      const si=piPlan.submittedFeatureIds.indexOf(sibOldId);
-      if(si>-1)piPlan.submittedFeatureIds[si]=sib.id;
+    if(typeof piPlans!=='undefined'&&Array.isArray(piPlans)){
+      piPlans.forEach(function(_plan){
+        if(!_plan.submittedFeatureIds)return;
+        const si=_plan.submittedFeatureIds.indexOf(sibOldId);
+        if(si>-1)_plan.submittedFeatureIds[si]=sib.id;
+      });
     }
   });
 
@@ -1529,6 +1788,12 @@ function scClosePanelUserAction(){
 }
 
 function scClosePanel(){
+  // v9.25 — closing hides the panel via CSS class removal, it doesn't
+  // destroy #sc-refine-txt's DOM node — so without this, a mic left
+  // listening would keep capturing into a now-hidden textarea, same
+  // privacy/resource-leak shape as the tab-backgrounding case, just
+  // scoped to "this panel is closed" instead of "browser tab is hidden."
+  voiceStopActive('abort');
   scPanelFeatureId=null;
   document.getElementById('sc-main').classList.remove('panel-open');
   document.getElementById('sc-panel').classList.remove('open');
@@ -1674,24 +1939,37 @@ function scRenderPanel(feat){
     h+=`</div>`;
     h+=`<div class="sc-story-title-row">`;
     h+=`<div class="sc-story-title" id="sc-st-title-${si}">${e(st.title)}</div>`;
+    h+=scStoryTypeBadge(st.storyType,{extraStyle:'flex-shrink:0;'});
     if(_canEditFcPiPanel)h+=`<button class="sc-story-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();scEditStoryTitle('${e(feat.id)}',${si})" title="Edit title"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`;
     h+=`</div>`;
-    h+=`<div class="sc-story-stmt-row">`;
-    h+=`<div class="sc-story-stmt" id="sc-st-stmt-${si}">${e(st.statement)}</div>`;
-    if(_canEditFcPiPanel)h+=`<button class="sc-story-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();scEditStoryStmt('${e(feat.id)}',${si})" title="Edit description" style="margin-top:2px;"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`;
-    h+=`</div>`;
-    if(st.scenarios&&st.scenarios.length>0){
-      h+=`<div class="sc-ac-block"><div class="sc-ac-label">Acceptance criteria</div>`;
-      st.scenarios.forEach((sc,sci)=>{
-        h+=`<div class="sc-ac-scenario" id="sc-st-ac-${si}-${sci}">`;
-        h+=`<div style="display:flex;justify-content:space-between;align-items:flex-start;">`;
-        h+=`<div style="flex:1;white-space:pre-wrap;"><span class="sc-ac-kw">Scenario:</span> ${e(sc.name)}\n<span class="sc-ac-kw">Given</span> ${e(sc.given)}\n<span class="sc-ac-kw">When</span>  ${e(sc.when)}\n<span class="sc-ac-kw">Then</span>  ${e(sc.then)}${sc.and?`\n<span class="sc-ac-kw">And</span>   ${e(sc.and)}`:''}`;
-        h+=`</div>`;
-        if(_canEditFcPiPanel)h+=`<button class="sc-story-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();scEditStoryAC('${e(feat.id)}',${si},${sci})" title="Edit acceptance criteria" style="flex-shrink:0;margin-left:4px;margin-top:1px;"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`;
-        h+=`</div>`;
-        h+=`</div>`;
-      });
+    if((st.storyType||'traditional')==='traditional'){
+      h+=`<div class="sc-story-stmt-row">`;
+      h+=`<div class="sc-story-stmt" id="sc-st-stmt-${si}">${e(st.statement)}</div>`;
+      if(_canEditFcPiPanel)h+=`<button class="sc-story-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();scEditStoryStmt('${e(feat.id)}',${si})" title="Edit description" style="margin-top:2px;"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`;
       h+=`</div>`;
+      if(st.scenarios&&st.scenarios.length>0){
+        h+=`<div class="sc-ac-block"><div class="sc-ac-label">Acceptance criteria</div>`;
+        st.scenarios.forEach((sc,sci)=>{
+          h+=`<div class="sc-ac-scenario" id="sc-st-ac-${si}-${sci}">`;
+          h+=`<div style="display:flex;justify-content:space-between;align-items:flex-start;">`;
+          h+=`<div style="flex:1;white-space:pre-wrap;"><span class="sc-ac-kw">Scenario:</span> ${e(sc.name)}\n<span class="sc-ac-kw">Given</span> ${e(sc.given)}\n<span class="sc-ac-kw">When</span>  ${e(sc.when)}\n<span class="sc-ac-kw">Then</span>  ${e(sc.then)}${sc.and?`\n<span class="sc-ac-kw">And</span>   ${e(sc.and)}`:''}`;
+          h+=`</div>`;
+          if(_canEditFcPiPanel)h+=`<button class="sc-story-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();scEditStoryAC('${e(feat.id)}',${si},${sci})" title="Edit acceptance criteria" style="flex-shrink:0;margin-left:4px;margin-top:1px;"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`;
+          h+=`</div>`;
+          h+=`</div>`;
+        });
+        h+=`</div>`;
+      }
+    } else {
+      // ai_feature / agentic — same shared sections as Story Canvas/Release
+      // Canvas (scGetStorySections), read-only here (no per-field edit
+      // affordance yet, matching the pencil-edit gating in Story Canvas).
+      const _secs=(typeof scGetStorySections==='function')?scGetStorySections(st):[];
+      // Plain text styling (no .sc-ac-scenario) — that class is monospace/
+      // pre-wrap for Gherkin blocks and shouldn't apply to prose/bullet
+      // sections here, matching the unstyled divs Story Canvas/PI Planning
+      // use for the same scGetStorySections() output.
+      h+=`<div class="sc-ac-block">`+_secs.map(sec=>`<div class="sc-ac-label" style="margin-top:8px;">${e(sec.label)}</div><div style="font-size:10px;color:var(--t2);line-height:1.7;">${sec.html}</div>`).join('')+`</div>`;
     }
     h+=`</div></div>`;
   });
@@ -2008,6 +2286,10 @@ function fcPanelSendToSC(){
 }
 
 function scRefineStories(){
+  // v9.25 — stop-on-send: refinement below is read synchronously from the
+  // live value, so stopping here first doesn't affect what gets captured.
+  // No "next message" for continued dictation to feed once this fires.
+  voiceStopActive('abort');
   if(!scPanelFeatureId)return;
   const feat=scCanvas.find(f=>f.id===scPanelFeatureId);
   if(!feat)return;
@@ -2096,6 +2378,15 @@ async function scGenerateStories(featureIds){
   if(!features.length)return;
   // Open panel on first feature being generated
   const firstFeat=features[0];
+  // v9.25 code-review fix — this is a SECOND entry point that reassigns
+  // scPanelFeatureId (scOpenPanel() is the other), and #sc-refine-txt is
+  // static HTML that's never destroyed — the same misattribution risk
+  // scOpenPanel()'s own guard exists to prevent: dictation started for
+  // whatever feature's panel was open before this bulk-generate call would
+  // otherwise keep running and could get submitted against firstFeat
+  // instead via scRefineStories() (which reads scPanelFeatureId at click
+  // time, not at typing time).
+  voiceStopActive('abort');
   scPanelFeatureId=firstFeat.id;
   document.getElementById('sc-panel-feat-name').textContent=firstFeat.name;
   scLineageTargetElId='sc-panel-feat-meta';
@@ -2108,7 +2399,9 @@ async function scGenerateStories(featureIds){
   // state) is deferred to inside the lock callback, below.
   document.getElementById('sc-gen-btn').disabled=true;
   const _scCtx=(typeof getFullProductCtx==='function')?getFullProductCtx():{name:(productContext&&productContext.name)||'the product',icp:(productContext&&productContext.icp)||'product manager'};
-  _scCtx.docContext=(typeof buildDocContext==='function')?buildDocContext('sc'):'';
+  var _scDocRes=(typeof buildDocContext==='function')?buildDocContext('sc',features.map(f=>f.name).filter(Boolean).join(' ')):{text:'',truncated:false};
+  _scCtx.docContext=_scDocRes.text;
+  _fireDocTruncatedToast(_scDocRes.truncated);
   // Collect refinement from any feature in the batch (used when called from scRefineStories)
   const refinement=features.length===1&&features[0]._refinement?features[0]._refinement:'';
   const prompt=scBuildStoryPrompt(_scCtx,features,refinement);
@@ -2151,17 +2444,27 @@ async function scGenerateStories(featureIds){
   // Dynamic token limit: scale with features × stories to prevent truncation at higher settings.
   // Model override: if projected output exceeds ~7k tokens (Haiku's safe ceiling),
   // force Sonnet regardless of batch size — Haiku's 8192 output limit would truncate.
+  // Per-story estimate raised 900->1300 for the three-tier story classification
+  // (ai_feature/agentic stories carry a nested `detail` object) — this only
+  // raises the ceiling passed to callAPI, not committed cost, but it does mean
+  // the Haiku->Sonnet override below now trips at smaller batch sizes.
   const _maxStories=(typeof appSettings!=='undefined'?appSettings.maxStories:5)||5;
-  const _projectedTok=features.length*_maxStories*900;
+  const _projectedTok=features.length*_maxStories*1300;
   const _dynTok=Math.min(32000,Math.max(12000,_projectedTok+2000));
   const _batchModel=_projectedTok>7000?null:(typeof resolveThresholdModel==='function')?resolveThresholdModel(features.length):null;
+  // v9.13: tags WHY a non-null _batchModel was supplied, so usage-tracking
+  // records this as 'batch_threshold_override' rather than the honest-but-
+  // uninformative 'explicit_override_unclassified' fallback every other
+  // (unaudited) modelOverride call site currently gets.
+  const _batchSource=_batchModel?'batch_threshold_override':null;
   const txt=await callAPI(
-    'You are a senior product manager and scrum master. Write grooming-ready user stories with Gherkin acceptance criteria. Respond ONLY with valid JSON. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.',
+    'You are a senior product manager and scrum master. Write grooming-ready user stories, choosing the right rigor format per story (traditional Gherkin acceptance criteria, AI-feature eval scenarios with rubrics, or an agentic operating/evaluation contract) based on each story\'s own nature. Respond ONLY with valid JSON. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.',
     prompt,
     _dynTok,
     _signal,
     _batchModel,
-    'fc-gen-stories'
+    'fc-gen-stories',
+    _batchSource
   );
     const clean=txt.replace(/```json|```/g,'').trim();
     let parsed;
@@ -2179,18 +2482,64 @@ async function scGenerateStories(featureIds){
         const isRefine=!!(feat._refinement);
         const newStories=(featBlock.stories||[]).map((st)=>{
           scStoryIdCounter++;
-          return{
+          // Normalize separators (hyphen/space) before matching, and if the
+          // model still returns something off-list, infer from whichever
+          // detail.* shape is actually present rather than defaulting straight
+          // to 'traditional' — that default previously discarded an entire
+          // ai_feature/agentic detail payload (statement/scenarios stay empty
+          // for those types) whenever story_type didn't match exactly.
+          const _rawType=String(st.story_type||'traditional').toLowerCase().trim().replace(/[\s-]+/g,'_');
+          const _d0=st.detail||{};
+          const storyType=['traditional','ai_feature','agentic'].includes(_rawType)?_rawType
+            :(_d0.goal||_d0.decision_rights||_d0.guardrails||_d0.escalation?'agentic'
+              :(_d0.outcome||_d0.behavior_expectations||_d0.eval_scenarios||_d0.quality_bar?'ai_feature':'traditional'));
+          const base={
             id:'ST-'+String(scStoryIdCounter).padStart(3,'0'),
             title:st.title,
-            statement:st.statement,
             points:st.points||3,
             priority:st.priority||'Should Have',
             dor:'NOT READY',
             dorReason:'',
+            storyType,
             scenarios:st.scenarios||[],
             _inSC:false,
             _hiddenFromSC:false
           };
+          if(storyType==='traditional'){
+            base.statement=st.statement||'';
+            return base;
+          }
+          // ai_feature / agentic — every nested read defensively guarded so a
+          // partially-truncated response (see the repair path above) degrades
+          // to empty fields instead of throwing.
+          const d=st.detail||{};
+          if(storyType==='ai_feature'){
+            base.detail={
+              outcome:d.outcome||'',
+              behaviorExpectations:Array.isArray(d.behavior_expectations)?d.behavior_expectations:[],
+              evalScenarios:Array.isArray(d.eval_scenarios)?d.eval_scenarios.map(s=>({scenario:(s&&s.scenario)||'',rubric:(s&&s.rubric)||'',category:_scNormalizeRubricCategory(s&&s.category),scoring:_scNormalizeScoring(s&&s.scoring)})).filter(s=>s.scenario||s.rubric):[],
+              qualityBar:{
+                metrics:Array.isArray(d.quality_bar&&d.quality_bar.metrics)?d.quality_bar.metrics.map(m=>({name:_scNameOrThreshold(m&&m.name),threshold:_scNameOrThreshold(m&&m.threshold)})):[],
+                rerunTrigger:(d.quality_bar&&d.quality_bar.rerun_trigger)||''
+              }
+            };
+          } else {
+            base.detail={
+              goal:d.goal||'',
+              decisionRights:Array.isArray(d.decision_rights)?d.decision_rights:[],
+              guardrails:Array.isArray(d.guardrails)?d.guardrails:[],
+              escalation:{
+                triggers:Array.isArray(d.escalation&&d.escalation.triggers)?d.escalation.triggers:[],
+                handoff:Array.isArray(d.escalation&&d.escalation.handoff)?d.escalation.handoff:[]
+              },
+              acceptanceEnvelope:{
+                metrics:Array.isArray(d.acceptance_envelope&&d.acceptance_envelope.metrics)?d.acceptance_envelope.metrics.map(m=>({name:_scNameOrThreshold(m&&m.name),threshold:_scNameOrThreshold(m&&m.threshold)})):[],
+                rubrics:Array.isArray(d.acceptance_envelope&&d.acceptance_envelope.rubrics)?d.acceptance_envelope.rubrics.map(s=>({scenario:(s&&s.scenario)||'',rubric:(s&&s.rubric)||'',category:_scNormalizeRubricCategory(s&&s.category),scoring:_scNormalizeScoring(s&&s.scoring)})).filter(s=>s.scenario||s.rubric):[],
+                rerunTrigger:(d.acceptance_envelope&&d.acceptance_envelope.rerun_trigger)||''
+              }
+            };
+          }
+          return base;
         });
         if(isRefine&&feat.stories&&feat.stories.length>0){
           // Merge: keep existing stories, append new ones (avoiding duplicates by title)
@@ -2299,7 +2648,20 @@ function scBuildStoryPrompt(ctx,features,refinement){
     }
     return block;
   };
-  const featList=features.map(f=>`- Feature: "${f.name}" (Capability: ${f.cap}, Metric: ${f.metric}, Stage: ${f.stage})\n  Why: ${f.why}${_scHypBlock(f)}`).join('\n');
+  // §10 — story generation's PRIMARY source becomes the intake brief when
+  // this feature carries a non-null intakeBriefId (RA-created), with the
+  // feature's own name/why as secondary/grounding context - reversing the
+  // pre-redesign priority order. If intakeBriefId is null (manually-created
+  // feature, or RA-off), behavior is completely unchanged. Targeted
+  // extraction via requirement-agent.js's _raGetCapabilityBriefExcerpt() -
+  // never the entire liveDraftMd blob.
+  const _scBriefBlock=f=>{
+    if(!f.intakeBriefId||typeof _raFindConv!=='function'||typeof _raGetCapabilityBriefExcerpt!=='function')return'';
+    const conv=_raFindConv(f.intakeBriefId);
+    const excerpt=conv?_raGetCapabilityBriefExcerpt(conv,f.cap):'';
+    return excerpt?`\n  RELEASE REQUIREMENTS BRIEF (PRIMARY source - ground the stories in this, using the feature name/why below only as secondary/supporting context):\n  ${excerpt.split('\n').join('\n  ')}`:'';
+  };
+  const featList=features.map(f=>`- Feature: "${f.name}" (Capability: ${f.cap}, Metric: ${f.metric}, Stage: ${f.stage})${_scBriefBlock(f)}\n  Why: ${f.why}${_scHypBlock(f)}`).join('\n');
   const _scDocText=(ctx&&ctx.docContext)?ctx.docContext:'';
   const _scHasDoc=String(_scDocText).trim().length>0;
   const _scEnrichment=_scHasDoc?'\n'+_docEnrichmentInstruction()+'\n'+_backlogEnrichmentInstruction():'';
@@ -2314,22 +2676,41 @@ ${refinement?'\nRefinement instruction: '+refinement+'\nApply this refinement to
 Features to story-ify:
 ${featList}
 
-Return a JSON array — one object per feature. Format EXACTLY:
+Return a JSON array — one object per feature. Each story is classified independently with its own "story_type" and must match exactly ONE of the three shapes below — never mix shapes (a "traditional" story has no "detail" key; an "ai_feature"/"agentic" story has no "statement"/"scenarios" keys):
 [
   {
     "feature": "exact feature name",
     "stories": [
       {
+        "story_type": "traditional",
         "title": "outcome-oriented title — [Persona] can [action] so that [outcome]",
         "statement": "As a [persona], I want to [action], so that [outcome].",
-        "points": 3,
-        "priority": "Must Have",
-        "dor": "READY",
-        "dor_reason": "",
+        "points": 3, "priority": "Must Have", "dor": "READY", "dor_reason": "",
         "scenarios": [
           {"name": "scenario name", "given": "precondition", "when": "action", "then": "outcome", "and": "additional outcome or empty string"},
           {"name": "edge case name", "given": "precondition", "when": "action", "then": "outcome", "and": ""}
         ]
+      },
+      {
+        "story_type": "ai_feature",
+        "title": "outcome-oriented title", "points": 3, "priority": "Must Have", "dor": "READY", "dor_reason": "",
+        "detail": {
+          "outcome": "the user outcome this AI behavior should achieve",
+          "behavior_expectations": ["concrete behavior that must always hold", "..."],
+          "eval_scenarios": [{"scenario": "a concrete input/situation", "rubric": "one-sentence grading criteria for a good response to it", "category": "Groundedness", "scoring": {"evaluator_type": "llm_judge", "scale": "0-1", "threshold": ">= 0.7", "rationale": "one sentence on why this evaluator/scale/threshold fits"}}],
+          "quality_bar": {"metrics": [{"name": "metric name", "threshold": ">= 90%"}], "rerun_trigger": "what change requires re-running the scenario set"}
+        }
+      },
+      {
+        "story_type": "agentic",
+        "title": "outcome-oriented title", "points": 3, "priority": "Must Have", "dor": "READY", "dor_reason": "",
+        "detail": {
+          "goal": "the outcome the agent is pursuing and when it applies",
+          "decision_rights": ["what it may determine, recommend, or execute on its own", "..."],
+          "guardrails": ["what it must never do regardless of instruction", "..."],
+          "escalation": {"triggers": ["concrete condition that forces a handoff to a human", "..."], "handoff": ["what context must travel with the handoff", "..."]},
+          "acceptance_envelope": {"metrics": [{"name": "metric name", "threshold": ">= 80%"}], "rubrics": [{"scenario": "a concrete judgment-call situation the agent may face (e.g. a borderline escalation call)", "rubric": "one-sentence criteria for what a sound decision looks like in that situation", "category": "Accuracy", "scoring": {"evaluator_type": "llm_judge", "scale": "0-1", "threshold": ">= 0.7", "rationale": "one sentence on why this evaluator/scale/threshold fits"}}], "rerun_trigger": "what change requires re-running the scenario set"}
+        }
       }
     ]
   }
@@ -2342,24 +2723,31 @@ Rules:
 - priority: Must Have / Should Have / Could Have
 - dor: READY or NOT READY
 - dor_reason: only if NOT READY — state reason (e.g. "UX design needed", "API contract undefined")
-- scenarios: minimum 2 per story, up to ${typeof appSettings!=='undefined'?appSettings.maxACs:3} — one happy path, one edge/error case always included
-- given/when/then/and: concrete, testable language — never vague
-- and: empty string if not needed
-- If a feature lists an outcome hypothesis above, favor acceptance criteria that would plausibly move that specific metric in that direction — do not ignore this context when present
+- story_type: classify EACH story independently as "traditional", "ai_feature", or "agentic":
+  - "traditional": one correct, verifiable behavior per input — a lookup, calculation, CRUD action, or workflow step where right/wrong is unambiguous and testable with Given/When/Then.
+  - "ai_feature": the story's core behavior is produced by a generative/ML model where multiple different outputs can be equally acceptable (summarization, recommendation, drafting, judgment-based classification) — quality is graded by a rubric across a distribution of scenarios, not one pass/fail assertion.
+  - "agentic": the system autonomously decides AND acts across multiple steps on the user's/business's behalf (not just answering a question) — it needs explicit decision rights, guardrails, and escalation rules because it can take consequential action without a human approving each step.
+  Do not default every story in a feature to the same story_type — a single feature can and often should mix types. Most stories in most products are still "traditional" — reserve "ai_feature" and "agentic" for stories whose core value genuinely depends on model-generated judgment or autonomous action, not merely because the product itself has AI in it.
+- scenarios (traditional only): minimum 2 per story, up to ${typeof appSettings!=='undefined'?appSettings.maxACs:3} — one happy path, one edge/error case always included. given/when/then/and: concrete, testable language — never vague. and: empty string if not needed
+- detail.behavior_expectations / decision_rights / guardrails: 2-5 concrete bullets each, never vague
+- detail.eval_scenarios (ai_feature only): minimum 2, up to ${typeof appSettings!=='undefined'?appSettings.maxACs:3} — concrete scenario + a one-sentence grading rubric for that scenario
+- detail.escalation (agentic only): triggers = concrete handoff conditions; handoff = what context travels with the handoff
+- detail.quality_bar / detail.acceptance_envelope: 1-4 measurable metrics with name+threshold (threshold is a short string with unit/operator, e.g. ">= 80%", "< $0.25", "= 0", never a bare number); rerun_trigger: one sentence on what change requires re-running the scenario set
+- detail.acceptance_envelope.rubrics (agentic only): 2-4 concrete judgment-call scenarios the agent may plausibly face (a borderline escalation call, an ambiguous guardrail boundary, a low-confidence decision) + a one-sentence rubric for what a sound decision looks like in that scenario. This grades the quality of the agent's in-the-moment judgment, separate from the aggregate pass/fail metrics above — do not omit it, and do not just restate the guardrails as rubrics
+- detail.eval_scenarios[] / detail.acceptance_envelope.rubrics[] — "category" and "scoring": category classifies what that specific rubric actually tests — Groundedness (claims traceable to real context/data), Hallucination (states fabricated info as fact), Accuracy (factually/numerically correct), Adversarial (resists manipulation/prompt-injection/jailbreak), Out-of-context (correctly handles requests outside intended scope), Consistency (stable output across reruns of the same input), Format (follows required output structure), Bias (fair/non-discriminatory across groups), Safety (avoids harmful/toxic content), Robustness (handles malformed/noisy input gracefully), Privacy (avoids leaking PII/sensitive data), Completeness (covers everything the scenario requires), Tone (appropriately calibrated confidence/register), or General if none of these cleanly applies — never force a stretch fit. scoring is your recommendation for how this would actually be scored in automated testing: evaluator_type is "script_diff" (fully deterministic, no judgment involved), "llm_judge" (needs a model-as-judge), or "toxicity_scan" (a safety/content classifier); scale is "binary" (pass/fail) or "0-1" (continuous score); threshold is a short pass line in the same style as the metrics above (e.g. ">= 0.7", "pass iff no fabricated claim"); rationale is one sentence on why that evaluator/scale/threshold fits. Pick category and scoring independently per rubric based on what that specific scenario actually tests — most will cluster around Groundedness, Accuracy, Out-of-context, or Completeness, and most scoring will not need "llm_judge"/"0-1" by default; reserve the rarer categories (Adversarial, Bias, Safety, Privacy, Tone, Robustness, Format, Consistency) and non-"llm_judge" choices for scenarios that genuinely test that specific concern, not out of habit or because the surrounding story is AI-generated
+- If a feature lists an outcome hypothesis above, favor acceptance criteria / eval scenarios that would plausibly move that specific metric in that direction — do not ignore this context when present
 - Return ONLY the JSON array. No other text.`;
 }
 
 // ── Export ──
 // ── FC Export — in-flight state ──
 var fcExportInFlight=false;
-function fcSyncExportBtn(){
-  var btn=document.getElementById('sc-export-btn');
-  if(!btn)return;
-  btn.disabled=!!fcExportInFlight;
-  btn.innerHTML=fcExportInFlight?
-    '<i class="ti ti-loader-2" style="font-size:11px;animation:spin 1s linear infinite;" aria-hidden="true"></i> Exporting\u2026':
-    '<i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export';
-}
+// v9.20: Export's own button (#sc-export-btn) was folded into the toolbar
+// kebab (scTbKebabTopHtml()) and no longer exists as a standalone element.
+// The kebab's Export row already closes the menu on click, before this
+// in-flight state changes, so there is nothing left in the DOM to sync \u2014
+// kept as a no-op stub since fcExportInFlight's toggling around it stays.
+function fcSyncExportBtn(){}
 async function scExportAll(){
   if(fcExportInFlight)return;
   var snap=(typeof fcGetVisibleCanvasSorted==='function')?fcGetVisibleCanvasSorted():(typeof fcGetVisibleCanvas==='function'?fcGetVisibleCanvas():[]);
@@ -3520,19 +3908,21 @@ function scDoEditFeat(fid, mode){
     feat.piSubmittedStoryCount=0;
     scSelectedIds.delete(fid);
     scPiSelectedIds.delete(fid);
-    // Item 27: if feature was in PI plan, remove its stories from plan
-    if(typeof piPlan!=='undefined'&&piPlan){
-      // Remove all this feature's story IDs from storyAssignments and backlogStoryIds
-      // (feat.stories is now [], so we need to remove by checking featureId on piFindStory)
-      // We stored stories before clearing — use the old stories to clean up
-      const oldStoryIds=Object.keys(piPlan.storyAssignments||{}).filter(sid=>{
-        const s=scCanvas.find(f=>f.stories&&f.stories.some(st=>st.id===sid));
-        return !s; // story no longer exists on canvas
+    // Item 27: if feature was in a release plan, remove its stories from
+    // whichever plan actually owns them (v9.20: searches across all plans,
+    // not a single bare global - a feature's stories could in principle be
+    // split across plans, though normally aren't).
+    if(typeof piPlans!=='undefined'&&Array.isArray(piPlans)){
+      piPlans.forEach(function(_plan){
+        const oldStoryIds=Object.keys(_plan.storyAssignments||{}).filter(sid=>{
+          const s=scCanvas.find(f=>f.stories&&f.stories.some(st=>st.id===sid));
+          return !s; // story no longer exists on canvas
+        });
+        oldStoryIds.forEach(sid=>{delete _plan.storyAssignments[sid];});
       });
-      oldStoryIds.forEach(sid=>{
-        delete piPlan.storyAssignments[sid];
-        if(piPlan.backlogStoryIds)piPlan.backlogStoryIds=piPlan.backlogStoryIds.filter(id=>id!==sid);
-      });
+      if(typeof piBacklogStoryIds!=='undefined'&&Array.isArray(piBacklogStoryIds)){
+        piBacklogStoryIds=piBacklogStoryIds.filter(sid=>!!scCanvas.find(f=>f.stories&&f.stories.some(st=>st.id===sid)));
+      }
     }
     // Close story panel if this feature is open
     if(scPanelFeatureId===fid){

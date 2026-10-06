@@ -117,7 +117,7 @@ function _tmRenderRows() {
   wrap.innerHTML = `
     <div style="background:#fff;border-radius:8px;border:1px solid #D0D5E8;overflow:visible;">
       <div class="tm-row tm-row-head">
-        <div>Name</div><div>Email</div><div>Role</div><div>Status</div><div>Actions</div>
+        <div>Name</div><div>Email</div><div>Role</div><div>Access</div><div>Status</div><div>Actions</div>
       </div>
       ${rows || '<div style="padding:30px 14px;text-align:center;font-size:11px;color:#A5AFBE;font-family:\'DM Sans\',sans-serif;">' + (_tmMembers.length ? 'No members match your search or filters.' : 'No members yet.') + '</div>'}
       ${countLine}
@@ -226,6 +226,11 @@ function _tmRoleBadge(role) {
   return '<span class="tm-badge tm-badge-member">Power User</span>';
 }
 
+function _tmAccessBadge(access) {
+  if (access === 'control_tower') return '<span class="tm-badge tm-badge-control-tower">Control Tower</span>';
+  return '<span class="tm-badge tm-badge-full-suite">Full Suite</span>';
+}
+
 function _tmRowHTML(m) {
   const rowClass = 'tm-row' + (m.status === 'disabled' ? ' tm-row-disabled' : '');
   const nameHtml = m.namePlaceholder
@@ -234,7 +239,7 @@ function _tmRowHTML(m) {
   const actionsCell = m.is_self
     ? '<div></div>'
     : `<div style="position:relative;">
-        <button class="tm-dots" aria-label="Row actions" aria-expanded="false" onclick="event.stopPropagation();tmToggleRowMenu(this,'${e(m.user_id)}','${m.role}','${m.status}')">
+        <button class="tm-dots" aria-label="Row actions" aria-expanded="false" onclick="event.stopPropagation();tmToggleRowMenu(this,'${e(m.user_id)}','${m.role}','${m.status}','${m.access}')">
           <i class="ti ti-dots-vertical" style="font-size:14px;" aria-hidden="true"></i>
         </button>
       </div>`;
@@ -242,13 +247,14 @@ function _tmRowHTML(m) {
     <div style="font-size:11px;font-weight:600;">${nameHtml}</div>
     <div style="font-size:11px;color:#6b6b68;">${e(m.email)}</div>
     <div>${_tmRoleBadge(m.role)}</div>
+    <div>${_tmAccessBadge(m.access)}</div>
     <div>${_tmStatusBadge(m.status)}</div>
     ${actionsCell}
   </div>`;
 }
 
 // ── Row action menu ──
-function tmToggleRowMenu(triggerEl, userId, role, status) {
+function tmToggleRowMenu(triggerEl, userId, role, status, access) {
   const items = [];
   if (status === 'invite_pending') {
     items.push({ label: 'Resend', icon: 'ti-refresh', action: `tmResend('${userId}')` });
@@ -260,6 +266,11 @@ function tmToggleRowMenu(triggerEl, userId, role, status) {
     // v9.09 — 3-role stacked menu (Option B): show only the "Make X" items
     // that are NOT the member's current role, as peers to Disable/Delete —
     // no submenu/flyout, matching the existing menu shape exactly.
+    // Section labels/dividers below match the reviewed prototype's grouping
+    // (team-management-access-prototype.html) and reuse the exact heading/
+    // divider pattern already established by _tmToggleFilterPanel() above,
+    // rather than inventing a new one.
+    items.push({ heading: 'Role' });
     var _roleActions = {
       admin:    { label: 'Make Admin',      icon: 'ti-shield' },
       member:   { label: 'Make Power User', icon: 'ti-user' },
@@ -269,10 +280,23 @@ function tmToggleRowMenu(triggerEl, userId, role, status) {
       if (r === role) return;
       items.push({ label: _roleActions[r].label, icon: _roleActions[r].icon, action: `tmSetRole('${userId}','${r}')` });
     });
+    items.push({ divider: true });
+    items.push({ heading: 'Access' });
+    var _accessActions = {
+      full_suite:    { label: 'Set Full Suite Access',  icon: 'ti-apps' },
+      control_tower: { label: 'Set Control Tower Only', icon: 'ti-gauge' }
+    };
+    Object.keys(_accessActions).forEach(function(a) {
+      if (a === access) return;
+      items.push({ label: _accessActions[a].label, icon: _accessActions[a].icon, action: `tmSetAccess('${userId}','${a}')` });
+    });
+    items.push({ divider: true });
     items.push({ label: 'Disable', icon: 'ti-ban', action: `tmDisable('${userId}')` });
     items.push({ label: 'Delete', icon: 'ti-trash', action: `tmStartDelete('${userId}')`, danger: true });
   }
   const html = items.map(function(it, idx) {
+    if (it.heading) return `<div style="padding:8px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">${it.heading}</div>`;
+    if (it.divider) return '<div style="height:0.5px;background:#D0D5E8;"></div>';
     const dividerBefore = it.danger && idx > 0 ? '<div style="height:0.5px;background:#D0D5E8;"></div>' : '';
     return dividerBefore + `<div role="menuitem" tabindex="0" class="tm-menu-item${it.danger ? ' tm-menu-item-danger' : ''}"
       onclick="_uiRowMenuClose();${it.action}">
@@ -321,6 +345,13 @@ function tmShowInviteModal() {
           <div id="tm-inv-role-readonly" onclick="_tmSelectInviteRole('readonly')" style="flex:1;text-align:center;padding:7px 0;border:1px solid var(--divider);border-radius:6px;font-size:11px;font-weight:600;color:var(--t3);cursor:pointer;">Read Only</div>
         </div>
       </div>
+      <div>
+        <label style="font-size:10px;font-weight:700;color:var(--t2);display:block;margin-bottom:4px;">Access</label>
+        <div style="display:flex;gap:6px;">
+          <div id="tm-inv-access-full_suite" onclick="_tmSelectInviteAccess('full_suite')" style="flex:1;text-align:center;padding:7px 0;border:1px solid var(--purple);background:var(--purple-pale);border-radius:6px;font-size:11px;font-weight:600;color:var(--purple);cursor:pointer;">Full Suite</div>
+          <div id="tm-inv-access-control_tower" onclick="_tmSelectInviteAccess('control_tower')" style="flex:1;text-align:center;padding:7px 0;border:1px solid var(--divider);border-radius:6px;font-size:11px;font-weight:600;color:var(--t3);cursor:pointer;">Control Tower Only</div>
+        </div>
+      </div>
     </div>
     <div style="padding:16px 20px 18px;display:flex;justify-content:flex-end;gap:8px;">
       <button onclick="document.getElementById('tm-invite-overlay').remove()" class="modal-cancel-btn">Cancel</button>
@@ -329,6 +360,7 @@ function tmShowInviteModal() {
   </div>`;
   document.body.appendChild(overlay);
   window._tmSelectedRole = 'member';
+  window._tmSelectedAccess = 'full_suite';
   const escC = function(ev){ if(ev.key==='Escape'){ overlay.remove(); document.removeEventListener('keydown',escC,true); } };
   document.addEventListener('keydown', escC, true);
   trapFocus(overlay);
@@ -344,6 +376,16 @@ function _tmSelectInviteRole(role) {
   if (admin) admin.style.cssText = role === 'admin' ? activeStyle : inactiveStyle;
   if (member) member.style.cssText = role === 'member' ? activeStyle : inactiveStyle;
   if (readonly) readonly.style.cssText = role === 'readonly' ? activeStyle : inactiveStyle;
+}
+
+function _tmSelectInviteAccess(access) {
+  window._tmSelectedAccess = access;
+  const fullSuite = document.getElementById('tm-inv-access-full_suite');
+  const controlTower = document.getElementById('tm-inv-access-control_tower');
+  const activeStyle = 'flex:1;text-align:center;padding:7px 0;border:1px solid var(--purple);background:var(--purple-pale);border-radius:6px;font-size:11px;font-weight:600;color:var(--purple);cursor:pointer;';
+  const inactiveStyle = 'flex:1;text-align:center;padding:7px 0;border:1px solid var(--divider);border-radius:6px;font-size:11px;font-weight:600;color:var(--t3);cursor:pointer;';
+  if (fullSuite) fullSuite.style.cssText = access === 'full_suite' ? activeStyle : inactiveStyle;
+  if (controlTower) controlTower.style.cssText = access === 'control_tower' ? activeStyle : inactiveStyle;
 }
 
 async function tmSubmitInvite() {
@@ -374,7 +416,8 @@ async function tmSubmitInvite() {
   btn.disabled = true;
   btn.textContent = 'Inviting...';
   const result = await _tmCall('/api/team/invite', {
-    email, full_name: (nameEl.value || '').trim(), role: window._tmSelectedRole || 'member'
+    email, full_name: (nameEl.value || '').trim(), role: window._tmSelectedRole || 'member',
+    access: window._tmSelectedAccess || 'full_suite'
   });
   btn.disabled = false;
   btn.textContent = 'Invite Member';
@@ -393,6 +436,16 @@ async function tmSubmitInvite() {
 // ── Set role ──
 async function tmSetRole(userId, newRole) {
   const result = await _tmCall('/api/team/set-role', { target_user_id: userId, new_role: newRole });
+  if (result.error) {
+    if (typeof showToast === 'function') showToast(result.error.message);
+    return;
+  }
+  tmLoad();
+}
+
+// ── Set access ──
+async function tmSetAccess(userId, newAccess) {
+  const result = await _tmCall('/api/team/set-access', { target_user_id: userId, new_access: newAccess });
   if (result.error) {
     if (typeof showToast === 'function') showToast(result.error.message);
     return;
